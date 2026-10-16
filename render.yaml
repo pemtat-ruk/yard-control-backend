@@ -1,0 +1,68 @@
+# Render Blueprint: ฐานข้อมูล + backend + frontend ในครั้งเดียว (Dashboard → New → Blueprint → เลือก repo นี้)
+# ค่าที่มี sync: false ต้องกรอกเองตอนสร้าง — URL ของแต่ละ service คือ https://<name>.onrender.com
+# (ถ้าชื่อซ้ำกับคนอื่น Render จะต่อท้ายชื่อให้ ให้แก้ค่าตาม URL จริงแล้ว deploy ใหม่)
+
+databases:
+  - name: ycs-db
+    plan: free # แบบฟรีถูกลบหลัง 30 วัน — ใช้งานจริงเปลี่ยนเป็นแบบเสียเงิน
+    region: singapore
+    postgresMajorVersion: "17"
+    databaseName: yard_control
+    user: ycs
+
+services:
+  - type: web
+    name: ycs-backend
+    runtime: node
+    plan: free
+    region: singapore
+    # --include=dev: NODE_ENV=production ทำให้ npm ข้าม devDependencies ซึ่งมีเครื่องมือ build (Nest CLI, TypeScript)
+    buildCommand: npm ci --include=dev && npm run build
+    # migrate ตอนเริ่มแอป: แบบฟรีไม่มี Pre-Deploy Command และตอนนี้ต่อฐานข้อมูลได้แน่นอน; รันซ้ำได้ ไม่มีอะไรเปลี่ยนถ้าไม่มี migration ใหม่
+    startCommand: npx prisma migrate deploy && npm run start:prod
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "24"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ycs-db
+          property: connectionString
+      - key: AUTH_SECRET
+        generateValue: true
+      # URL ของ frontend เช่น https://ycs-frontend.onrender.com (ไม่มี / ท้าย)
+      - key: WEB_ORIGIN
+        sync: false
+      # Render มี proxy หน้าแอป 1 ชั้น; คำขอที่มาผ่าน frontend มีเพิ่มอีก — ดู ip ใน log แล้วปรับ (README)
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      - key: RUN_JOBS
+        value: "true"
+      - key: CRM_MODE
+        value: mock
+      - key: PAYMENT_GATEWAY_MODE
+        value: mock
+      - key: TRANSACTION_PREFIX
+        value: YCS
+      - key: LOG_LEVEL
+        value: info
+
+  - type: web
+    name: ycs-frontend
+    runtime: node
+    plan: free
+    region: singapore
+    repo: https://github.com/pemtat-ruk/yard-control-system
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run start
+    envVars:
+      - key: NODE_VERSION
+        value: "24"
+      # เบราว์เซอร์เรียก API ผ่านเว็บนี้ แล้ว Next ส่งต่อไป BACKEND_URL — session cookie จึงเป็นของโดเมนเดียวกัน
+      - key: NEXT_PUBLIC_API_URL
+        value: /api/v1
+      # URL ของ backend เช่น https://ycs-backend.onrender.com (ไม่มี /api/v1) — ใช้ตอน build จึงต้องตั้งก่อน deploy
+      - key: BACKEND_URL
+        sync: false
