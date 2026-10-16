@@ -66,3 +66,16 @@ services:
       # URL ของ backend เช่น https://ycs-backend.onrender.com (ไม่มี /api/v1) — ใช้ตอน build จึงต้องตั้งก่อน deploy
       - key: BACKEND_URL
         sync: false
+      # เซิร์ฟเวอร์ทดสอบ: ปุ่มเข้าสู่ระบบด่วน (รหัสผ่านถูกฝังในหน้าเว็บ ใครมี URL ก็เข้าได้ทุกบทบาท) — production จริงลบ 5 ค่านี้ออก
+      - key: NEXT_PUBLIC_DEMO_MODE
+        value: "true"
+      # ให้ตรงกับ SEED_EMPLOYEE_PASSWORD ที่ใช้ตอน seed
+      - key: NEXT_PUBLIC_DEMO_EMPLOYEE_PASSWORD
+        sync: false
+      # บัญชีลูกค้าที่ลงทะเบียนไว้แล้วบนเซิร์ฟเวอร์ทดสอบ (ไม่ตั้ง = ไม่มีปุ่มนั้น)
+      - key: NEXT_PUBLIC_DEMO_BUYER_PHONE
+        sync: false
+      - key: NEXT_PUBLIC_DEMO_GREEN_SHIRT_CARD
+        sync: false
+      - key: NEXT_PUBLIC_DEMO_GREEN_SHIRT_PHONE
+        sync: false
