@@ -1,0 +1,17 @@
+/node_modules
+/dist
+/coverage
+*.tsbuildinfo
+
+# env files
+.env*
+!.env.example
+
+# logs
+npm-debug.log*
+
+.DS_Store
+
+# เครื่องมือของผู้พัฒนา (ไม่ commit)
+/.claude/
+/docs/

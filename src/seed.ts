@@ -1,0 +1,106 @@
+import 'dotenv/config';
+import { PrismaPg } from '@prisma/adapter-pg';
+import { PrismaClient } from '@prisma/client';
+import { todayInBangkok, toDbDate } from './common/service-date.js';
+import { env } from './config/env.js';
+import { hashPassword } from './modules/auth/domain/password.js';
+import {
+  PERMISSION_ELIGIBILITY,
+  type Department,
+  type Permission,
+} from './modules/auth/domain/permissions.js';
+
+// ข้อมูลตั้งต้นสำหรับเครื่องพัฒนา: npm run db:seed (รันซ้ำได้ ไม่สร้างซ้ำ)
+const SLOTS_PER_LOT = 12;
+const LOTS = [
+  { code: 'A', name: 'ลานจอด A' },
+  { code: 'B', name: 'ลานจอด B' },
+];
+// ตำแหน่งช่อง (นับจาก 1) ที่ตั้งสถานะไว้ให้เห็นครบทุกสีบนผัง
+const RESERVED_POSITIONS = [6, 11];
+const CLOSED_POSITIONS = [9];
+
+const EMPLOYEES: { code: string; name: string; department: Department }[] = [
+  { code: 'CS001', name: 'วิไล พรหมมา', department: 'CUSTOMER_SERVICE' },
+  { code: 'YD001', name: 'ประเสริฐ ทองคำ', department: 'YARD_MANAGEMENT' },
+  { code: 'IT001', name: 'มาลี ศรีสุข', department: 'IT' },
+];
+
+function permissionsOf(department: Department): Permission[] {
+  return (Object.keys(PERMISSION_ELIGIBILITY) as Permission[]).filter(
+    (permission) => PERMISSION_ELIGIBILITY[permission].includes(department),
+  );
+}
+
+async function seed(prisma: PrismaClient): Promise<void> {
+  if (!env.seedEmployeePassword) {
+    throw new Error('SEED_EMPLOYEE_PASSWORD must be set to seed employees');
+  }
+  const passwordHash = hashPassword(env.seedEmployeePassword);
+
+  for (const [lotIndex, lot] of LOTS.entries()) {
+    const saved = await prisma.parkingLot.upsert({
+      where: { code: lot.code },
+      update: {},
+      create: { ...lot, sortOrder: lotIndex },
+    });
+    for (let position = 1; position <= SLOTS_PER_LOT; position++) {
+      const code = `${lot.code}${String(position).padStart(2, '0')}`;
+      await prisma.parkingSlot.upsert({
+        where: { lotId_code: { lotId: saved.id, code } },
+        update: {},
+        create: {
+          lotId: saved.id,
+          code,
+          gridCol: position,
+          baseStatus: RESERVED_POSITIONS.includes(position)
+            ? 'RESERVED'
+            : CLOSED_POSITIONS.includes(position)
+              ? 'CLOSED'
+              : 'OPEN',
+        },
+      });
+    }
+  }
+
+  let firstEmployeeId = 0;
+  for (const employee of EMPLOYEES) {
+    const saved = await prisma.user.upsert({
+      where: { employeeCode: employee.code },
+      update: {},
+      create: {
+        type: 'EMPLOYEE',
+        department: employee.department,
+        employeeCode: employee.code,
+        fullName: employee.name,
+        passwordHash,
+        permissions: {
+          create: permissionsOf(employee.department).map((permission) => ({
+            permission,
+          })),
+        },
+      },
+    });
+    firstEmployeeId ||= saved.id;
+  }
+
+  if ((await prisma.rateConfig.count()) === 0) {
+    await prisma.rateConfig.create({
+      data: {
+        pricePerSlotRound: env.pricePerSlotRound,
+        effectiveFrom: toDbDate(todayInBangkok()),
+        permitRef: 'SEED',
+        createdById: firstEmployeeId,
+      },
+    });
+  }
+}
+
+const prisma = new PrismaClient({
+  adapter: new PrismaPg({ connectionString: env.databaseUrl }),
+});
+try {
+  await seed(prisma);
+} finally {
+  await prisma.$disconnect();
+}
