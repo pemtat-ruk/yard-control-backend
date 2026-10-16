@@ -1,0 +1,429 @@
+// Yard Control System (YCS) — ระบบลานจอดรถจัดเรียงสินค้า
+// อ้างอิง Requirement Sign-off S6-FM-03-01 Ver.01 (15 ก.ย. 2026)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ───────────── ผู้ใช้งานและสิทธิ์ (ข้อ 1, 2) ─────────────
+
+enum UserType {
+  EMPLOYEE // พนักงาน: login ด้วยรหัสพนักงาน + รหัสผ่าน
+  GREEN_SHIRT // แรงงานเสื้อเขียว: หมายเลขบัตรแรงงาน + เบอร์โทร
+  BUYER // ผู้ซื้อทั่วไป: เบอร์โทร
+}
+
+enum Department {
+  CUSTOMER_SERVICE // ฝ่ายบริการลูกค้า
+  IT // ฝ่าย IT
+  YARD_MANAGEMENT // ฝ่ายจัดพื้นที่
+  OTHER
+}
+
+// สิทธิ์ให้เป็นรายบุคคล ("เฉพาะคนที่ได้รับสิทธิ์")
+enum Permission {
+  BOOKING_CREATE_SELF // จองด้วยตนเอง
+  BOOKING_CREATE_ON_BEHALF // ฝ่ายบริการลูกค้าจองแทน
+  BOOKING_IMPORT_LONG_TERM // นำเข้าข้อมูลจองระยะยาวของลูกค้าประจำ
+  LAYOUT_TOGGLE // เปิด/ปิด ช่องจอดหรือลานจอด
+  LAYOUT_EDIT // เพิ่ม/ลบ ช่องจอดและลานจอด
+  PRICING_MANAGE // กำหนดเวลาและราคาช่องจอด
+  SLOT_INSPECT // ตรวจสอบช่องจอด
+  REPORT_VIEW // รายงานและแดชบอร์ด (กำหนดสิทธิ์ภายหลัง)
+  SETTINGS_MANAGE // ตั้งค่าระบบ
+}
+
+model User {
+  id           Int         @id @default(autoincrement())
+  type         UserType
+  department   Department?
+  employeeCode String?     @unique @map("employee_code") @db.VarChar(50)
+  passwordHash String?     @map("password_hash") @db.VarChar(512)
+  phone        String?     @unique @db.VarChar(20)
+  laborCardNo  String?     @unique @map("labor_card_no") @db.VarChar(50)
+  crmId        String?     @unique @map("crm_id") @db.VarChar(100) // ผู้ขอใช้บริการต้องมีข้อมูลใน CRM ก่อน
+  fullName     String      @map("full_name") @db.VarChar(255)
+  isActive     Boolean     @default(true) @map("is_active")
+  createdAt    DateTime    @default(now()) @map("created_at")
+  updatedAt    DateTime    @updatedAt @map("updated_at")
+
+  permissions   UserPermission[]
+  bookings      Booking[]        @relation("BookingCustomer")
+  bookingsMade  Booking[]        @relation("BookingCreatedBy")
+  finesIssued   Fine[]           @relation("FineIssuedBy")
+  finesReceived Fine[]           @relation("FineCustomer")
+  notifications Notification[]
+  auditLogs     AuditLog[]
+
+  @@map("users")
+}
+
+model UserPermission {
+  userId      Int        @map("user_id")
+  permission  Permission
+  grantedById Int?       @map("granted_by_id")
+  grantedAt   DateTime   @default(now()) @map("granted_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, permission])
+  @@map("user_permissions")
+}
+
+// ───────────── ผังลานจอด (ข้อ 5) ─────────────
+
+// สถานะที่เก็บจริงมีแค่ที่ตั้งค่าด้วยมือ; OCCUPIED / OVERTIME คำนวณจากการจอง ณ เวลานั้น
+enum SlotBaseStatus {
+  OPEN
+  RESERVED // จัดสรร/สงวนสิทธิ์ให้ลูกค้าประจำ
+  CLOSED
+}
+
+model ParkingLot {
+  id        Int      @id @default(autoincrement())
+  code      String   @unique @db.VarChar(20)
+  name      String   @db.VarChar(255)
+  isOpen    Boolean  @default(true) @map("is_open")
+  sortOrder Int      @default(0) @map("sort_order")
+  deletedAt DateTime? @map("deleted_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  slots ParkingSlot[]
+
+  @@map("parking_lots")
+}
+
+model ParkingSlot {
+  id         Int            @id @default(autoincrement())
+  lotId      Int            @map("lot_id")
+  code       String         @db.VarChar(20)
+  baseStatus SlotBaseStatus @default(OPEN) @map("base_status")
+  // ตำแหน่งบนแผนผัง (grid)
+  gridRow    Int            @default(0) @map("grid_row")
+  gridCol    Int            @default(0) @map("grid_col")
+  deletedAt  DateTime?      @map("deleted_at")
+  createdAt  DateTime       @default(now()) @map("created_at")
+  updatedAt  DateTime       @updatedAt @map("updated_at")
+
+  lot         ParkingLot      @relation(fields: [lotId], references: [id])
+  occupancies SlotOccupancy[]
+  bookings    BookingSlot[]
+  fines       Fine[]
+  statusLogs  SlotStatusLog[]
+  inspections SlotInspection[]
+
+  @@unique([lotId, code])
+  @@map("parking_slots")
+}
+
+model SlotStatusLog {
+  id          Int            @id @default(autoincrement())
+  slotId      Int            @map("slot_id")
+  fromStatus  SlotBaseStatus @map("from_status")
+  toStatus    SlotBaseStatus @map("to_status")
+  changedById Int            @map("changed_by_id")
+  reason      String?        @db.VarChar(500)
+  createdAt   DateTime       @default(now()) @map("created_at")
+
+  slot ParkingSlot @relation(fields: [slotId], references: [id])
+
+  @@index([slotId, createdAt])
+  @@map("slot_status_logs")
+}
+
+// ───────────── ตารางรอบ (ข้อ 3.2, ข้อ 2 ฟังก์ชันกำหนดเวลา) ─────────────
+
+// ตั้งใหม่แบบมีผลตั้งแต่วันที่ เพิ่มแถวใหม่ทุกครั้ง ไม่แก้ทับ; ไม่มีแถวที่มีผล = 07:00 รอบละ 4 ชม.
+// วันมีผลต้องอยู่หลังช่วงจองล่วงหน้า การจองที่มีอยู่จึงไม่ถูกเปลี่ยนความหมายของเลขรอบ
+model RoundConfig {
+  id            Int      @id @default(autoincrement())
+  effectiveFrom DateTime @unique @map("effective_from") @db.Date
+  firstHour     Int      @map("first_hour") // ชั่วโมงเริ่มรอบแรกของวันบริการ 0–23
+  roundHours    Int      @map("round_hours") // ชั่วโมงต่อรอบ หาร 24 ลงตัว
+  createdById   Int      @map("created_by_id")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("round_configs")
+}
+
+// ───────────── ราคา (ข้อ 2: ปรับตามหนังสืออนุญาตของบริษัทเท่านั้น) ─────────────
+
+model RateConfig {
+  id                Int      @id @default(autoincrement())
+  lotId             Int?     @map("lot_id") // null = ใช้กับทุกลาน
+  pricePerSlotRound Decimal  @map("price_per_slot_round") @db.Decimal(12, 2)
+  effectiveFrom     DateTime @map("effective_from") @db.Date
+  permitRef         String   @map("permit_ref") @db.VarChar(100) // เลขที่หนังสืออนุญาต
+  createdById       Int      @map("created_by_id")
+  createdAt         DateTime @default(now()) @map("created_at")
+
+  @@index([lotId, effectiveFrom])
+  @@map("rate_configs")
+}
+
+// ───────────── การจอง (ข้อ 3) ─────────────
+
+enum BookingType {
+  SHORT // <= 24 ชม.
+  LONG // > 1 วัน ใช้ช่วงเวลาและช่องจอดเดียวกันทุกวัน
+}
+
+enum PaymentPlan {
+  FULL // ชำระเต็มจำนวน
+  DAILY // ชำระวันต่อวัน (เฉพาะระยะยาว)
+}
+
+enum BookingStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  COMPLETED
+  CANCELLED // ยกเลิกอัตโนมัติเมื่อไม่ชำระตามกำหนด — ไม่คืนเงิน
+}
+
+enum BookingSource {
+  SELF
+  CUSTOMER_SERVICE
+  IMPORT
+}
+
+model Booking {
+  id           Int           @id @default(autoincrement())
+  bookingNo    String        @unique @map("booking_no") @db.VarChar(30)
+  customerId   Int           @map("customer_id")
+  createdById  Int           @map("created_by_id")
+  source       BookingSource @default(SELF)
+  type         BookingType
+  paymentPlan  PaymentPlan   @default(FULL) @map("payment_plan")
+  status       BookingStatus @default(PENDING_PAYMENT)
+  startDate    DateTime      @map("start_date") @db.Date // วันบริการ (เริ่ม 07:00)
+  endDate      DateTime      @map("end_date") @db.Date
+  startRound   Int           @map("start_round") // 0 = 07:00, 1 = 11:00, ...
+  roundCount   Int           @map("round_count") // ขั้นต่ำ 1 รอบ (4 ชม.)
+  // อัตรา ณ วันที่จอง — การเปลี่ยนราคาภายหลังไม่กระทบการจองเดิม
+  pricePerSlotRound Decimal  @map("price_per_slot_round") @db.Decimal(12, 2)
+  totalAmount  Decimal       @map("total_amount") @db.Decimal(12, 2)
+  cancelledAt  DateTime?     @map("cancelled_at")
+  cancelReason String?       @map("cancel_reason") @db.VarChar(255)
+  createdAt    DateTime      @default(now()) @map("created_at")
+  updatedAt    DateTime      @updatedAt @map("updated_at")
+
+  customer    User            @relation("BookingCustomer", fields: [customerId], references: [id])
+  createdBy   User            @relation("BookingCreatedBy", fields: [createdById], references: [id])
+  slots       BookingSlot[]
+  days        BookingDay[]
+  occupancies SlotOccupancy[]
+  payments    Payment[]
+  tickets     Ticket[]
+  inspections SlotInspection[]
+
+  @@index([customerId, status])
+  @@index([status, startDate])
+  @@map("bookings")
+}
+
+model BookingSlot {
+  bookingId Int @map("booking_id")
+  slotId    Int @map("slot_id")
+
+  booking Booking     @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  slot    ParkingSlot @relation(fields: [slotId], references: [id])
+
+  @@id([bookingId, slotId])
+  @@map("booking_slots")
+}
+
+// ค่าบริการรายวันของการจอง — ใช้ติดตามการชำระวันต่อวัน
+model BookingDay {
+  id          Int       @id @default(autoincrement())
+  bookingId   Int       @map("booking_id")
+  serviceDate DateTime  @map("service_date") @db.Date
+  amount      Decimal   @db.Decimal(12, 2)
+  dueAt       DateTime  @map("due_at") // เที่ยงคืนก่อนวันใช้งานจริง
+  paymentId   Int?      @map("payment_id")
+  paidAt      DateTime? @map("paid_at")
+
+  booking Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  payment Payment? @relation(fields: [paymentId], references: [id])
+
+  @@unique([bookingId, serviceDate])
+  @@index([dueAt, paidAt])
+  @@map("booking_days")
+}
+
+// 1 แถว = 1 ช่องจอด x 1 วันบริการ x 1 รอบ; unique กันจองซ้อนที่ระดับฐานข้อมูล
+model SlotOccupancy {
+  id          Int      @id @default(autoincrement())
+  slotId      Int      @map("slot_id")
+  serviceDate DateTime @map("service_date") @db.Date
+  roundIndex  Int      @map("round_index")
+  bookingId   Int      @map("booking_id")
+
+  slot    ParkingSlot @relation(fields: [slotId], references: [id])
+  booking Booking     @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@unique([slotId, serviceDate, roundIndex])
+  @@index([bookingId])
+  @@map("slot_occupancies")
+}
+
+// ───────────── การชำระเงิน (ข้อ 6, 7) ─────────────
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  EXPIRED
+  FAILED
+}
+
+enum PaymentPurpose {
+  BOOKING
+  FINE
+}
+
+model Payment {
+  id            Int            @id @default(autoincrement())
+  transactionNo String         @unique @map("transaction_no") @db.VarChar(50) // ขึ้นต้นด้วย Transaction Prefix Code ของ YCS
+  purpose       PaymentPurpose @default(BOOKING)
+  bookingId     Int?           @map("booking_id")
+  amount        Decimal        @db.Decimal(12, 2)
+  status        PaymentStatus  @default(PENDING)
+  qrPayload     String?        @map("qr_payload") @db.Text
+  gatewayRef    String?        @unique @map("gateway_ref") @db.VarChar(100)
+  expiresAt     DateTime       @map("expires_at") // "ชำระภายใน [วันและเวลา]"
+  paidAt        DateTime?      @map("paid_at")
+  createdAt     DateTime       @default(now()) @map("created_at")
+  updatedAt     DateTime       @updatedAt @map("updated_at")
+
+  booking     Booking?     @relation(fields: [bookingId], references: [id])
+  bookingDays BookingDay[]
+  receipt     Receipt?
+  fine        Fine?
+
+  @@index([status, expiresAt])
+  @@map("payments")
+}
+
+model Receipt {
+  id        Int      @id @default(autoincrement())
+  receiptNo String   @unique @map("receipt_no") @db.VarChar(30)
+  paymentId Int      @unique @map("payment_id")
+  issuedAt  DateTime @default(now()) @map("issued_at")
+
+  payment Payment @relation(fields: [paymentId], references: [id])
+
+  @@map("receipts")
+}
+
+model Ticket {
+  id          Int      @id @default(autoincrement())
+  ticketNo    String   @unique @map("ticket_no") @db.VarChar(30)
+  bookingId   Int      @map("booking_id")
+  serviceDate DateTime @map("service_date") @db.Date
+  issuedAt    DateTime @default(now()) @map("issued_at")
+
+  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@unique([bookingId, serviceDate])
+  @@map("tickets")
+}
+
+// ───────────── ค่าปรับ (ข้อ 5) ─────────────
+
+model Fine {
+  id         Int      @id @default(autoincrement())
+  fineNo     String   @unique @map("fine_no") @db.VarChar(30)
+  customerId Int?     @map("customer_id")
+  slotId     Int?     @map("slot_id")
+  issuedById Int      @map("issued_by_id")
+  reason     String   @db.VarChar(500)
+  amount     Decimal  @db.Decimal(12, 2)
+  paymentId  Int?     @unique @map("payment_id")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  customer User?        @relation("FineCustomer", fields: [customerId], references: [id])
+  issuedBy User         @relation("FineIssuedBy", fields: [issuedById], references: [id])
+  slot     ParkingSlot? @relation(fields: [slotId], references: [id])
+  payment  Payment?     @relation(fields: [paymentId], references: [id])
+
+  @@map("fines")
+}
+
+// ───────────── ผลตรวจหน้างาน (ข้อ 4, 5) ─────────────
+
+enum InspectionResult {
+  VACATED // รถออกแล้ว — ช่องพ้นสถานะหมดเวลา
+  STILL_PARKED // ยังจอดอยู่หลังหมดเวลา
+}
+
+// ผลตรวจของช่องจอดในวันบริการหนึ่งของการจอง; ไม่มีแถว VACATED = ถือว่ายังไม่ยืนยันว่ารถออก
+model SlotInspection {
+  id          Int              @id @default(autoincrement())
+  slotId      Int              @map("slot_id")
+  bookingId   Int              @map("booking_id")
+  serviceDate DateTime         @map("service_date") @db.Date
+  result      InspectionResult
+  inspectorId Int              @map("inspector_id")
+  createdAt   DateTime         @default(now()) @map("created_at")
+
+  slot    ParkingSlot @relation(fields: [slotId], references: [id])
+  booking Booking     @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+
+  @@index([slotId, serviceDate])
+  @@map("slot_inspections")
+}
+
+// ───────────── แจ้งเตือน / ตั้งค่า / audit ─────────────
+
+enum NotificationType {
+  PARKING_EXPIRING // ล่วงหน้า 15 นาทีก่อนหมดเวลา
+  PARKING_OVERTIME // แจ้งเจ้าหน้าที่ตรวจสอบเมื่อหมดเวลา
+  PAYMENT_DUE
+  BOOKING_CANCELLED
+}
+
+model Notification {
+  id        Int              @id @default(autoincrement())
+  userId    Int              @map("user_id")
+  type      NotificationType
+  title     String           @db.VarChar(255)
+  body      String           @db.Text
+  // กันส่งซ้ำ เช่น "expiring:<bookingId>:<serviceDate>"
+  dedupeKey String?          @unique @map("dedupe_key") @db.VarChar(150)
+  readAt    DateTime?        @map("read_at")
+  createdAt DateTime         @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@map("notifications")
+}
+
+model SystemSetting {
+  key         String   @id @db.VarChar(100)
+  value       String   @db.Text
+  updatedById Int?     @map("updated_by_id")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  @@map("system_settings")
+}
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  userId    Int?     @map("user_id")
+  action    String   @db.VarChar(100)
+  entity    String   @db.VarChar(100)
+  entityId  String?  @map("entity_id") @db.VarChar(100)
+  detail    Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User? @relation(fields: [userId], references: [id])
+
+  @@index([entity, entityId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
