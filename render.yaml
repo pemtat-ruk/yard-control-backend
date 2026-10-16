@@ -19,7 +19,7 @@ services:
     # --include=dev: NODE_ENV=production ทำให้ npm ข้าม devDependencies ซึ่งมีเครื่องมือ build (Nest CLI, TypeScript)
     buildCommand: npm ci --include=dev && npm run build
     # migrate ตอนเริ่มแอป: แบบฟรีไม่มี Pre-Deploy Command และตอนนี้ต่อฐานข้อมูลได้แน่นอน; รันซ้ำได้ ไม่มีอะไรเปลี่ยนถ้าไม่มี migration ใหม่
-    # seed (ลานจอด, พนักงาน, ราคา, ลูกค้าตัวอย่าง) รันซ้ำได้ทุกครั้ง — สร้างเฉพาะที่ยังไม่มี ไม่เขียนทับข้อมูลเดิม
+    # seed (ลานจอด, พนักงาน + ลูกค้าทดสอบ, ราคา) รันซ้ำได้ทุกครั้ง — สร้างเฉพาะที่ยังไม่มี; รหัสผ่านพนักงานตั้งกลับเป็นค่าทดสอบ
     startCommand: npx prisma migrate deploy && node dist/seed.js && npm run start:prod
     healthCheckPath: /api/v1/health
     envVars:
@@ -49,16 +49,6 @@ services:
         value: YCS
       - key: LOG_LEVEL
         value: info
-      # รหัสผ่านของ CS001 / YD001 / IT001 ที่ seed สร้าง (ตั้งเอง; frontend อ่านค่านี้ไปใช้กับปุ่มเข้าสู่ระบบด่วน)
-      - key: SEED_EMPLOYEE_PASSWORD
-        sync: false
-      # ลูกค้าตัวอย่างของเซิร์ฟเวอร์ทดสอบ (เบอร์ปลอม ล็อกอินด้วยเบอร์อย่างเดียว) — production จริงลบ 3 ค่านี้
-      - key: SEED_DEMO_BUYER_PHONE
-        value: "0800000001"
-      - key: SEED_DEMO_GREEN_SHIRT_CARD
-        value: LB0001
-      - key: SEED_DEMO_GREEN_SHIRT_PHONE
-        value: "0800000002"
 
   - type: web
     name: ycs-frontend
@@ -77,27 +67,3 @@ services:
       # URL ของ backend เช่น https://ycs-backend.onrender.com (ไม่มี /api/v1) — ใช้ตอน build จึงต้องตั้งก่อน deploy
       - key: BACKEND_URL
         sync: false
-      # เซิร์ฟเวอร์ทดสอบ: ปุ่มเข้าสู่ระบบด่วน (รหัสผ่านถูกฝังในหน้าเว็บ ใครมี URL ก็เข้าได้ทุกบทบาท) — production จริงลบ 5 ค่านี้ออก
-      - key: NEXT_PUBLIC_DEMO_MODE
-        value: "true"
-      # ค่าเดียวกับที่ backend ใช้ seed — ดึงจาก service ycs-backend
-      - key: NEXT_PUBLIC_DEMO_EMPLOYEE_PASSWORD
-        fromService:
-          type: web
-          name: ycs-backend
-          envVarKey: SEED_EMPLOYEE_PASSWORD
-      - key: NEXT_PUBLIC_DEMO_BUYER_PHONE
-        fromService:
-          type: web
-          name: ycs-backend
-          envVarKey: SEED_DEMO_BUYER_PHONE
-      - key: NEXT_PUBLIC_DEMO_GREEN_SHIRT_CARD
-        fromService:
-          type: web
-          name: ycs-backend
-          envVarKey: SEED_DEMO_GREEN_SHIRT_CARD
-      - key: NEXT_PUBLIC_DEMO_GREEN_SHIRT_PHONE
-        fromService:
-          type: web
-          name: ycs-backend
-          envVarKey: SEED_DEMO_GREEN_SHIRT_PHONE

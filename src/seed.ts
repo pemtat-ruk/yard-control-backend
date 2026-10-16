@@ -21,6 +21,14 @@ const RESERVED_POSITIONS = [6, 11];
 const CLOSED_POSITIONS = [9];
 const DEMO_NAME_DIGITS = 4;
 
+// บัญชีทดสอบ: ตรงกับปุ่ม "เข้าสู่ระบบด่วน" ของ frontend (src/components/auth/dev-quick-login.tsx)
+// ⚠️ ระบบทดสอบเท่านั้น — ก่อนเปิดใช้งานจริงต้องเปลี่ยนรหัสผ่านพนักงานและลบลูกค้าตัวอย่าง
+const DEMO_EMPLOYEE_PASSWORD = 'ycs-demo-1234';
+const DEMO_CUSTOMERS = [
+  { type: 'BUYER' as const, phone: '0800000001' },
+  { type: 'GREEN_SHIRT' as const, phone: '0800000002', laborCardNo: 'LB9001' },
+];
+
 const EMPLOYEES: { code: string; name: string; department: Department }[] = [
   { code: 'CS001', name: 'วิไล พรหมมา', department: 'CUSTOMER_SERVICE' },
   { code: 'YD001', name: 'ประเสริฐ ทองคำ', department: 'YARD_MANAGEMENT' },
@@ -34,10 +42,7 @@ function permissionsOf(department: Department): Permission[] {
 }
 
 async function seed(prisma: PrismaClient): Promise<void> {
-  if (!env.seedEmployeePassword) {
-    throw new Error('SEED_EMPLOYEE_PASSWORD must be set to seed employees');
-  }
-  const passwordHash = hashPassword(env.seedEmployeePassword);
+  const passwordHash = hashPassword(DEMO_EMPLOYEE_PASSWORD);
 
   for (const [lotIndex, lot] of LOTS.entries()) {
     const saved = await prisma.parkingLot.upsert({
@@ -68,7 +73,8 @@ async function seed(prisma: PrismaClient): Promise<void> {
   for (const employee of EMPLOYEES) {
     const saved = await prisma.user.upsert({
       where: { employeeCode: employee.code },
-      update: {},
+      // ปุ่มเข้าสู่ระบบด่วนใช้รหัสผ่านทดสอบ — ตั้งกลับทุกครั้ง เผื่อเคย seed ด้วยรหัสอื่น
+      update: { passwordHash },
       create: {
         type: 'EMPLOYEE',
         department: employee.department,
@@ -101,20 +107,7 @@ async function seed(prisma: PrismaClient): Promise<void> {
 
 // ลูกค้าตัวอย่างแบบเดียวกับที่ลงทะเบียนผ่าน CRM จำลอง (ชื่อ "ลูกค้า" + เลข 4 ตัวท้าย, สิทธิ์จองเอง)
 async function seedDemoCustomers(prisma: PrismaClient): Promise<void> {
-  const customers = [
-    env.seedDemoBuyerPhone && {
-      type: 'BUYER' as const,
-      phone: env.seedDemoBuyerPhone,
-    },
-    env.seedDemoGreenShirtCard &&
-      env.seedDemoGreenShirtPhone && {
-        type: 'GREEN_SHIRT' as const,
-        phone: env.seedDemoGreenShirtPhone,
-        laborCardNo: env.seedDemoGreenShirtCard,
-      },
-  ].filter((customer) => !!customer);
-
-  for (const customer of customers) {
+  for (const customer of DEMO_CUSTOMERS) {
     await prisma.user.upsert({
       where: { phone: customer.phone },
       update: {},

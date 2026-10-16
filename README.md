@@ -36,7 +36,7 @@ npm run start:dev         # http://localhost:4000
 | `npm test` / `npm run test:e2e` | unit test / e2e test |
 | `npm run lint` / `npm run typecheck` / `npm run format` | ตรวจและจัดรูปแบบโค้ด |
 | `npm run db:migrate` / `db:deploy` / `db:studio` | จัดการฐานข้อมูล |
-| `npm run db:seed` | ข้อมูลตั้งต้นสำหรับเครื่องพัฒนา (รันซ้ำได้) รหัสผ่านพนักงานอยู่ใน `SEED_EMPLOYEE_PASSWORD` |
+| `npm run db:seed` | ข้อมูลตั้งต้นสำหรับเครื่องพัฒนาและเซิร์ฟเวอร์ทดสอบ (รันซ้ำได้) บัญชีทดสอบอยู่ใน `src/seed.ts` (รหัสผ่านพนักงาน `ycs-demo-1234`) |
 
 ## API
 
@@ -151,7 +151,7 @@ Base URL: `http://localhost:4000/api/v1` — เอกสารแบบลอ�
    - `WEB_ORIGIN` = URL ของ frontend เช่น `https://ycs-frontend.onrender.com`
    - `BACKEND_URL` (ของ frontend) = URL ของ backend เช่น `https://ycs-backend.onrender.com` ไม่มี `/api/v1`
 3. ถ้า Render ต่อท้ายชื่อ service เพราะชื่อซ้ำ ให้แก้สองค่านี้ตาม URL จริง แล้วกด Manual Deploy ทั้งสอง service (frontend ใช้ `BACKEND_URL` ตอน build)
-4. ข้อมูลตั้งต้นใส่ให้เองทุกครั้งที่ backend เริ่มทำงาน (`node dist/seed.js` ใน startCommand): ลานจอด A/B, พนักงาน CS001 / YD001 / IT001 (รหัสผ่าน = `SEED_EMPLOYEE_PASSWORD` ที่กรอกตอนสร้าง), ราคาตั้งต้น และลูกค้าตัวอย่างจาก `SEED_DEMO_*` — สร้างเฉพาะที่ยังไม่มี ไม่เขียนทับข้อมูลเดิม
+4. ข้อมูลตั้งต้นใส่ให้เองทุกครั้งที่ backend เริ่มทำงาน (`node dist/seed.js` ใน startCommand): ลานจอด A/B, พนักงาน CS001 / YD001 / IT001 (รหัสผ่าน `ycs-demo-1234`), ลูกค้าทดสอบ `0800000001` และเสื้อเขียว `LB9001` · `0800000002`, ราคาตั้งต้น — สร้างเฉพาะที่ยังไม่มี (รหัสผ่านพนักงานตั้งกลับเป็นค่าทดสอบทุกครั้ง) ⚠️ ก่อนใช้งานจริงต้องเปลี่ยนรหัสผ่านและเอาบัญชีทดสอบออก
 
 ทำไมตั้งแบบนี้
 

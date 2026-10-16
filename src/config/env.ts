@@ -156,12 +156,6 @@ export function loadEnv(source: EnvSource = process.env) {
     ),
     // งานตามเวลา (ยกเลิกอัตโนมัติ, แจ้งเตือน) — ปิดได้เมื่อรันหลาย instance แล้วให้ตัวเดียวทำ
     runJobs: (read('RUN_JOBS') ?? 'true') === 'true',
-    // ใช้เฉพาะ seed (npm run db:seed / node dist/seed.js)
-    seedEmployeePassword: read('SEED_EMPLOYEE_PASSWORD'),
-    // บัญชีลูกค้าตัวอย่างสำหรับเซิร์ฟเวอร์ทดสอบ (ปุ่มเข้าสู่ระบบด่วน) — ไม่ตั้ง = ไม่สร้าง
-    seedDemoBuyerPhone: read('SEED_DEMO_BUYER_PHONE'),
-    seedDemoGreenShirtCard: read('SEED_DEMO_GREEN_SHIRT_CARD'),
-    seedDemoGreenShirtPhone: read('SEED_DEMO_GREEN_SHIRT_PHONE'),
   };
 
   if (problems.length > 0) {
