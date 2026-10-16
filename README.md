@@ -151,10 +151,7 @@ Base URL: `http://localhost:4000/api/v1` — เอกสารแบบลอ�
    - `WEB_ORIGIN` = URL ของ frontend เช่น `https://ycs-frontend.onrender.com`
    - `BACKEND_URL` (ของ frontend) = URL ของ backend เช่น `https://ycs-backend.onrender.com` ไม่มี `/api/v1`
 3. ถ้า Render ต่อท้ายชื่อ service เพราะชื่อซ้ำ ให้แก้สองค่านี้ตาม URL จริง แล้วกด Manual Deploy ทั้งสอง service (frontend ใช้ `BACKEND_URL` ตอน build)
-4. ใส่ข้อมูลตั้งต้น (ลานจอด, บัญชีพนักงาน) จากเครื่องตัวเอง ด้วย External Database URL ของ `ycs-db`:
-   ```bash
-   DATABASE_URL="<External Database URL>" SEED_EMPLOYEE_PASSWORD="<รหัสผ่านที่ตั้งเอง>" npm run db:seed
-   ```
+4. ข้อมูลตั้งต้นใส่ให้เองทุกครั้งที่ backend เริ่มทำงาน (`node dist/seed.js` ใน startCommand): ลานจอด A/B, พนักงาน CS001 / YD001 / IT001 (รหัสผ่าน = `SEED_EMPLOYEE_PASSWORD` ที่กรอกตอนสร้าง), ราคาตั้งต้น และลูกค้าตัวอย่างจาก `SEED_DEMO_*` — สร้างเฉพาะที่ยังไม่มี ไม่เขียนทับข้อมูลเดิม
 
 ทำไมตั้งแบบนี้
 

@@ -10,7 +10,7 @@ import {
   type Permission,
 } from './modules/auth/domain/permissions.js';
 
-// ข้อมูลตั้งต้นสำหรับเครื่องพัฒนา: npm run db:seed (รันซ้ำได้ ไม่สร้างซ้ำ)
+// ข้อมูลตั้งต้นสำหรับเครื่องพัฒนาและเซิร์ฟเวอร์ทดสอบ: npm run db:seed (รันซ้ำได้ ไม่สร้างซ้ำ ไม่เขียนทับของเดิม)
 const SLOTS_PER_LOT = 12;
 const LOTS = [
   { code: 'A', name: 'ลานจอด A' },
@@ -19,6 +19,7 @@ const LOTS = [
 // ตำแหน่งช่อง (นับจาก 1) ที่ตั้งสถานะไว้ให้เห็นครบทุกสีบนผัง
 const RESERVED_POSITIONS = [6, 11];
 const CLOSED_POSITIONS = [9];
+const DEMO_NAME_DIGITS = 4;
 
 const EMPLOYEES: { code: string; name: string; department: Department }[] = [
   { code: 'CS001', name: 'วิไล พรหมมา', department: 'CUSTOMER_SERVICE' },
@@ -84,6 +85,8 @@ async function seed(prisma: PrismaClient): Promise<void> {
     firstEmployeeId ||= saved.id;
   }
 
+  await seedDemoCustomers(prisma);
+
   if ((await prisma.rateConfig.count()) === 0) {
     await prisma.rateConfig.create({
       data: {
@@ -91,6 +94,35 @@ async function seed(prisma: PrismaClient): Promise<void> {
         effectiveFrom: toDbDate(todayInBangkok()),
         permitRef: 'SEED',
         createdById: firstEmployeeId,
+      },
+    });
+  }
+}
+
+// ลูกค้าตัวอย่างแบบเดียวกับที่ลงทะเบียนผ่าน CRM จำลอง (ชื่อ "ลูกค้า" + เลข 4 ตัวท้าย, สิทธิ์จองเอง)
+async function seedDemoCustomers(prisma: PrismaClient): Promise<void> {
+  const customers = [
+    env.seedDemoBuyerPhone && {
+      type: 'BUYER' as const,
+      phone: env.seedDemoBuyerPhone,
+    },
+    env.seedDemoGreenShirtCard &&
+      env.seedDemoGreenShirtPhone && {
+        type: 'GREEN_SHIRT' as const,
+        phone: env.seedDemoGreenShirtPhone,
+        laborCardNo: env.seedDemoGreenShirtCard,
+      },
+  ].filter((customer) => !!customer);
+
+  for (const customer of customers) {
+    await prisma.user.upsert({
+      where: { phone: customer.phone },
+      update: {},
+      create: {
+        ...customer,
+        crmId: `MOCK-${customer.phone}`,
+        fullName: `ลูกค้า ${customer.phone.slice(-DEMO_NAME_DIGITS)}`,
+        permissions: { create: { permission: 'BOOKING_CREATE_SELF' } },
       },
     });
   }
