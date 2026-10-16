@@ -142,6 +142,29 @@ Base URL: `http://localhost:4000/api/v1` — เอกสารแบบลอ�
 | Error | error ที่ไม่คาดคิดตอบ `INTERNAL_ERROR` รายละเอียดอยู่ใน log เท่านั้น |
 | ปิดแอป | รับ SIGTERM / SIGINT แล้วรอ request เดิมจบและปิดการเชื่อมต่อฐานข้อมูล |
 
+## Deploy ขึ้น Render
+
+`render.yaml` สร้างฐานข้อมูล (`ycs-db`), backend (`ycs-backend`) และ frontend (`ycs-frontend` จาก repo `yard-control-system`) ในครั้งเดียว
+
+1. Render Dashboard → **New → Blueprint** → เลือก repo นี้
+2. กรอกค่าที่ Render ถาม (URL ของ service คือ `https://<ชื่อ>.onrender.com`):
+   - `WEB_ORIGIN` = URL ของ frontend เช่น `https://ycs-frontend.onrender.com`
+   - `BACKEND_URL` (ของ frontend) = URL ของ backend เช่น `https://ycs-backend.onrender.com` ไม่มี `/api/v1`
+3. ถ้า Render ต่อท้ายชื่อ service เพราะชื่อซ้ำ ให้แก้สองค่านี้ตาม URL จริง แล้วกด Manual Deploy ทั้งสอง service (frontend ใช้ `BACKEND_URL` ตอน build)
+4. ใส่ข้อมูลตั้งต้น (ลานจอด, บัญชีพนักงาน) จากเครื่องตัวเอง ด้วย External Database URL ของ `ycs-db`:
+   ```bash
+   DATABASE_URL="<External Database URL>" SEED_EMPLOYEE_PASSWORD="<รหัสผ่านที่ตั้งเอง>" npm run db:seed
+   ```
+
+ทำไมตั้งแบบนี้
+
+- **frontend ส่งต่อ `/api/v1` ไป backend** (rewrite ใน `next.config.ts` ของ frontend): session cookie เป็น `SameSite=Lax` เบราว์เซอร์ไม่ส่งข้ามโดเมน `*.onrender.com` คนละ service จึงให้เบราว์เซอร์คุยกับโดเมนของ frontend โดเมนเดียว
+- **migrate ตอนเริ่มแอป** (`startCommand`): แบบฟรีไม่มี Pre-Deploy Command; `prisma migrate deploy` รันซ้ำได้
+- **`npm ci --include=dev`**: `NODE_ENV=production` ทำให้ npm ข้ามเครื่องมือ build
+- **`TRUST_PROXY_HOPS`**: หลัง deploy ให้ดูค่า `ip` ใน log ของ backend (Render → Logs) ถ้าคำขอจากคนละเครื่องได้ ip เดียวกัน (ip ของ frontend) ให้เพิ่มค่าทีละ 1 จนได้ ip ของผู้ใช้ — ไม่อย่างนั้น rate limit จะนับทุกคนรวมกัน
+
+ข้อจำกัดของแบบฟรี: service หลับเมื่อไม่มีคนใช้ ~15 นาที (คำขอแรกช้า ~1 นาที และงานตามเวลา เช่น ยกเลิกการจองที่ไม่ชำระ ไม่ทำงานระหว่างหลับ), ฐานข้อมูลแบบฟรีถูกลบหลัง 30 วัน — ใช้งานจริงเปลี่ยน `plan` ใน `render.yaml`
+
 ## โครงสร้างโปรเจค
 
 ```
