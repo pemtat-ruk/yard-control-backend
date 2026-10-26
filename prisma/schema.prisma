@@ -113,7 +113,7 @@ model ParkingSlot {
   lot         ParkingLot      @relation(fields: [lotId], references: [id])
   occupancies SlotOccupancy[]
   bookings    BookingSlot[]
-  fines       Fine[]
+  fineSlots   FineSlot[]
   statusLogs  SlotStatusLog[]
   inspections SlotInspection[]
 
@@ -220,6 +220,7 @@ model Booking {
   payments    Payment[]
   tickets     Ticket[]
   inspections SlotInspection[]
+  fines       Fine[]
 
   @@index([customerId, status])
   @@index([status, startDate])
@@ -338,7 +339,8 @@ model Fine {
   id         Int      @id @default(autoincrement())
   fineNo     String   @unique @map("fine_no") @db.VarChar(30)
   customerId Int?     @map("customer_id")
-  slotId     Int?     @map("slot_id")
+  // การจองที่จอดเกินเวลา (ค่าปรับเก่าก่อนมีคอลัมน์นี้เป็น null)
+  bookingId  Int?     @map("booking_id")
   issuedById Int      @map("issued_by_id")
   reason     String   @db.VarChar(500)
   amount     Decimal  @db.Decimal(12, 2)
@@ -347,10 +349,24 @@ model Fine {
 
   customer User?        @relation("FineCustomer", fields: [customerId], references: [id])
   issuedBy User         @relation("FineIssuedBy", fields: [issuedById], references: [id])
-  slot     ParkingSlot? @relation(fields: [slotId], references: [id])
+  booking  Booking?     @relation(fields: [bookingId], references: [id])
   payment  Payment?     @relation(fields: [paymentId], references: [id])
+  slots    FineSlot[]
 
   @@map("fines")
+}
+
+// ช่องที่ถูกปรับในค่าปรับใบเดียว (Screen Design หน้า 16: ผู้จองคนเดียวจอดเกินหลายช่องของการจองเดียวกัน)
+model FineSlot {
+  fineId Int @map("fine_id")
+  slotId Int @map("slot_id")
+
+  fine Fine        @relation(fields: [fineId], references: [id], onDelete: Cascade)
+  slot ParkingSlot @relation(fields: [slotId], references: [id])
+
+  @@id([fineId, slotId])
+  @@index([slotId])
+  @@map("fine_slots")
 }
 
 // ───────────── ผลตรวจหน้างาน (ข้อ 4, 5) ─────────────

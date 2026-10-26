@@ -81,4 +81,69 @@ describe('AuthService.login for customers', () => {
     ).rejects.toMatchObject({ code: 'AUTH_INVALID_CREDENTIALS' });
     expect(user.update).not.toHaveBeenCalled();
   });
+
+  // Workflow ข้อ 3: ฝ่ายบริการลูกค้าตรวจ CRM ก่อนจองแทน
+  describe('verifyCustomer (customer service books on behalf)', () => {
+    const staff = {
+      id: 1,
+      name: 'เจ้าหน้าที่',
+      type: 'EMPLOYEE' as const,
+      department: 'CUSTOMER_SERVICE' as const,
+      phone: null,
+      laborCardNo: null,
+      employeeCode: 'CS001',
+      permissions: ['BOOKING_CREATE_ON_BEHALF' as const],
+    };
+
+    it('opens an account for a CRM customer who has never signed in', async () => {
+      const { service, user } = setup({ inCrm: true, existing: null });
+      const customer = await service.verifyCustomer(staff, {
+        userType: 'BUYER',
+        phone,
+      });
+      expect(user.create).toHaveBeenCalledTimes(1);
+      expect(customer).toEqual({
+        id: savedUser.id,
+        name: crmCustomer.fullName,
+        phone,
+        userType: 'BUYER',
+      });
+    });
+
+    it('refuses a customer who is not in CRM', async () => {
+      const { service, user } = setup({ inCrm: false, existing: null });
+      await expect(
+        service.verifyCustomer(staff, { userType: 'BUYER', phone }),
+      ).rejects.toMatchObject({ code: 'REGISTER_NOT_IN_CRM' });
+      expect(user.create).not.toHaveBeenCalled();
+    });
+
+    it('asks for the labor card number of a green-shirt worker', async () => {
+      const { service } = setup({ inCrm: true, existing: null });
+      await expect(
+        service.verifyCustomer(staff, { userType: 'GREEN_SHIRT', phone }),
+      ).rejects.toMatchObject({ code: 'VALIDATION_FAILED' });
+    });
+
+    it('tells staff when the phone belongs to another customer type', async () => {
+      const { service } = setup({ inCrm: true, existing: savedUser });
+      await expect(
+        service.verifyCustomer(staff, {
+          userType: 'GREEN_SHIRT',
+          phone,
+          laborCardNo: 'LG1',
+        }),
+      ).rejects.toMatchObject({ code: 'CUSTOMER_TYPE_MISMATCH' });
+    });
+
+    it('refuses a disabled customer account', async () => {
+      const { service } = setup({
+        inCrm: true,
+        existing: { ...savedUser, isActive: false },
+      });
+      await expect(
+        service.verifyCustomer(staff, { userType: 'BUYER', phone }),
+      ).rejects.toMatchObject({ code: 'CUSTOMER_INACTIVE' });
+    });
+  });
 });

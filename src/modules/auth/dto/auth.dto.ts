@@ -46,6 +46,7 @@ export class LoginDto {
   laborCardNo?: string;
 }
 
+// ข้อมูลระบุตัวผู้ขอใช้บริการ: ใช้ทั้งลงทะเบียนเอง และฝ่ายบริการลูกค้าตรวจ CRM ก่อนจองแทน (Workflow ข้อ 3)
 export class RegisterDto {
   @ApiProperty({ enum: CUSTOMER_TYPES })
   @IsIn(CUSTOMER_TYPES)
@@ -61,3 +62,5 @@ export class RegisterDto {
   @MaxLength(CODE_MAX_LENGTH)
   laborCardNo?: string;
 }
+
+export class VerifyCustomerDto extends RegisterDto {}

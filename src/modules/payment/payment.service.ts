@@ -8,6 +8,7 @@ import { PrismaService } from '../../prisma/prisma.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PaymentGateway } from './payment-gateway.js';
+import { EventsService } from '../events/events.service.js';
 
 export type PaymentView = {
   id: number;
@@ -45,6 +46,7 @@ export class PaymentService {
     private readonly prisma: PrismaService,
     private readonly gateway: PaymentGateway,
     private readonly settings: SettingsService,
+    private readonly events: EventsService,
   ) {}
 
   // ข้อ 7: เลขธุรกรรมขึ้นต้นด้วย Transaction Prefix Code ของ YCS ตามด้วยเวลา (UTC) และเลขสุ่ม
@@ -125,10 +127,16 @@ export class PaymentService {
   // บันทึกว่าชำระสำเร็จ: ออกใบเสร็จ ยืนยันการจอง และออกตั๋วของวันที่ชำระแล้ว
   // เรียกซ้ำได้ — รายการที่ชำระไปแล้วจะไม่ถูกประมวลซ้ำ
   async settle(id: number, now: Date = new Date()): Promise<void> {
+    // ผู้เกี่ยวข้องกับรายการที่เพิ่งชำระสำเร็จ (null = ไม่มีอะไรเปลี่ยน) — แจ้งหน้าเว็บหลัง transaction สำเร็จ
+    let notify: number[] | null = null;
     await this.prisma.$transaction(async (tx) => {
       const payment = await tx.payment.findUnique({
         where: { id },
-        include: { bookingDays: true },
+        include: {
+          bookingDays: true,
+          booking: { select: { customerId: true, createdById: true } },
+          fine: { select: { customerId: true, issuedById: true } },
+        },
       });
       if (!payment) throw notFound();
       if (payment.status === 'PAID') return;
@@ -146,6 +154,12 @@ export class PaymentService {
         data: { status: 'PAID', paidAt: now },
       });
       if (updated.count === 0) return;
+      notify = [
+        payment.booking?.customerId,
+        payment.booking?.createdById,
+        payment.fine?.customerId,
+        payment.fine?.issuedById,
+      ].filter((userId): userId is number => typeof userId === 'number');
 
       await tx.receipt.create({
         data: {
@@ -177,5 +191,9 @@ export class PaymentService {
         skipDuplicates: true,
       });
     });
+    if (notify) {
+      this.events.paymentSettled(id, notify);
+      this.events.slotsChanged();
+    }
   }
 }

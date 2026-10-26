@@ -3,6 +3,7 @@ import { ApiException } from '../../common/api-exception.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
+import type { UserType } from '../auth/domain/permissions.js';
 import { PaymentService } from '../payment/payment.service.js';
 import { RoundsService } from '../rounds/rounds.service.js';
 import { SettingsService } from '../settings/settings.service.js';
@@ -11,9 +12,11 @@ import { usageWindow } from '../booking/domain/rounds.js';
 import {
   overtimeFine,
   overtimeMinutesAt,
-  type OvertimeFine,
+  slotsFine,
+  type SlotsFine,
 } from './domain/fine-amount.js';
 import type { CreateFineDto, FineTargetDto } from './dto/create-fine.dto.js';
+import { vatIncluded, type VatBreakdown } from '../payment/domain/vat.js';
 
 const FINE_NO_DIGITS = 6;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
@@ -21,7 +24,7 @@ const LIST_LIMIT = 100;
 const MINUTES_PER_HOUR = 60;
 
 // เหตุผลที่บันทึกในค่าปรับ (ลูกค้าเห็นในรายการค่าปรับ)
-function overtimeReason(fine: OvertimeFine, note?: string): string {
+function overtimeReason(fine: SlotsFine, note?: string): string {
   const hours = Math.floor(fine.overtimeMinutes / MINUTES_PER_HOUR);
   const minutes = fine.overtimeMinutes % MINUTES_PER_HOUR;
   // ไม่แสดงส่วนที่เป็นศูนย์ ("0 ชม. 0 นาที")
@@ -30,7 +33,8 @@ function overtimeReason(fine: OvertimeFine, note?: string): string {
     minutes > 0 ? `${minutes} นาที` : '',
   ].filter(Boolean);
   const duration = parts.length > 0 ? parts.join(' ') : 'ไม่ถึง 1 นาที';
-  const reason = `จอดเกินเวลา ${duration} (${fine.rounds} รอบ × ${fine.pricePerSlotRound} บาท × ${fine.multiplier})`;
+  const slots = fine.slots > 1 ? ` × ${fine.slots} ช่อง` : '';
+  const reason = `จอดเกินเวลา ${duration} (${fine.rounds} รอบ × ${fine.pricePerSlotRound} บาท × ${fine.multiplier}${slots})`;
   return note?.trim() ? `${reason} — ${note.trim()}` : reason;
 }
 
@@ -38,12 +42,23 @@ export type FineView = {
   id: number;
   fineNo: string;
   customerName: string | null;
-  slotCode: string | null;
+  // ช่องที่ถูกปรับในใบนี้ (ใบเดียวมีได้หลายช่องของการจองเดียวกัน)
+  slotCodes: string[];
+  bookingNo: string | null;
   reason: string;
   amount: number;
   createdAt: string;
   paymentId: number | null;
   paid: boolean;
+  // ใบเสร็จค่าปรับ (Screen Design 6.12): มีเมื่อชำระแล้ว
+  receipt: {
+    receiptNo: string;
+    issuedAt: string;
+    transactionNo: string;
+    vat: VatBreakdown;
+  } | null;
+  // ส่งเท่าที่ใบเสร็จใช้ ไม่ส่งเบอร์โทร/บัตรแรงงาน (PDPA: เก็บและเปิดเผยเท่าที่จำเป็น)
+  customerType: UserType | null;
 };
 
 @Injectable()
@@ -57,10 +72,7 @@ export class FineService {
   ) {}
 
   // ยอดค่าปรับ ณ ตอนนี้ ให้ผู้ตรวจสอบเห็นก่อนยืนยัน (คำนวณซ้ำตอนบันทึกจริง)
-  async quote(
-    dto: FineTargetDto,
-    now: Date = new Date(),
-  ): Promise<OvertimeFine> {
+  async quote(dto: FineTargetDto, now: Date = new Date()): Promise<SlotsFine> {
     return (await this.calculate(dto, now)).fine;
   }
 
@@ -69,11 +81,12 @@ export class FineService {
       where: { id: dto.bookingId },
       include: { slots: true, days: { select: { serviceDate: true } } },
     });
-    if (!booking || !booking.slots.some((item) => item.slotId === dto.slotId)) {
+    const bookedSlots = new Set(booking?.slots.map((item) => item.slotId));
+    if (!booking || !dto.slotIds.every((slotId) => bookedSlots.has(slotId))) {
       throw new ApiException(
         HttpStatus.UNPROCESSABLE_ENTITY,
         'FINE_BOOKING_INVALID',
-        'Booking not found, or it does not use this slot',
+        'Booking not found, or it does not use one of these slots',
       );
     }
     const schedule = (await this.rounds.resolver())(
@@ -98,12 +111,15 @@ export class FineService {
     const { fineMultiplier } = await this.settings.current();
     return {
       booking,
-      fine: overtimeFine({
-        overtimeMinutes: minutes,
-        pricePerSlotRound: Number(booking.pricePerSlotRound),
-        multiplier: fineMultiplier,
-        roundHours: schedule.roundHours,
-      }),
+      fine: slotsFine(
+        overtimeFine({
+          overtimeMinutes: minutes,
+          pricePerSlotRound: Number(booking.pricePerSlotRound),
+          multiplier: fineMultiplier,
+          roundHours: schedule.roundHours,
+        }),
+        dto.slotIds.length,
+      ),
     };
   }
 
@@ -120,7 +136,7 @@ export class FineService {
         tx,
         {
           purpose: 'FINE',
-          amount: calculated.amount,
+          amount: calculated.total,
           expiresAt: new Date(now.getTime() + finePaymentDays * MS_PER_DAY),
         },
         now,
@@ -130,11 +146,14 @@ export class FineService {
           // เลขที่จริงต้องใช้ id ที่ฐานข้อมูลออกให้ จึงใส่ค่าชั่วคราวก่อน
           fineNo: payment.transactionNo,
           customerId: booking.customerId,
-          slotId: dto.slotId,
+          bookingId: booking.id,
           issuedById: user.id,
           reason: overtimeReason(calculated, dto.note),
-          amount: calculated.amount,
+          amount: calculated.total,
           paymentId: payment.id,
+          slots: {
+            create: dto.slotIds.map((slotId) => ({ slotId })),
+          },
         },
       });
       await tx.fine.update({
@@ -150,12 +169,13 @@ export class FineService {
       entityId: fineId,
       detail: {
         bookingId: dto.bookingId,
-        amount: calculated.amount,
+        slotIds: dto.slotIds,
+        amount: calculated.total,
         rounds: calculated.rounds,
       },
     });
     // หน้าตรวจสอบเปิด QR ให้ลูกค้าที่อยู่หน้างานสแกนได้ทันที
-    return { fineId, paymentId, amount: calculated.amount };
+    return { fineId, paymentId, amount: calculated.total };
   }
 
   // ค่าปรับค้างชำระปิดสิทธิ์จอง จึงต้องจ่ายได้เสมอ: QR เดิมหมดอายุแล้วให้ออกรายการชำระใหม่
@@ -218,9 +238,15 @@ export class FineService {
     const fines = await this.prisma.fine.findMany({
       where: user.type === 'EMPLOYEE' ? {} : { customerId: user.id },
       include: {
-        customer: { select: { fullName: true } },
-        slot: { select: { code: true } },
-        payment: { select: { status: true } },
+        customer: { select: { fullName: true, type: true } },
+        booking: { select: { bookingNo: true } },
+        slots: {
+          select: { slot: { select: { code: true } } },
+          orderBy: { slot: { code: 'asc' } },
+        },
+        payment: {
+          select: { status: true, transactionNo: true, receipt: true },
+        },
       },
       orderBy: { id: 'desc' },
       take: LIST_LIMIT,
@@ -229,12 +255,22 @@ export class FineService {
       id: fine.id,
       fineNo: fine.fineNo,
       customerName: fine.customer?.fullName ?? null,
-      slotCode: fine.slot?.code ?? null,
+      slotCodes: fine.slots.map((item) => item.slot.code),
+      bookingNo: fine.booking?.bookingNo ?? null,
       reason: fine.reason,
       amount: Number(fine.amount),
       createdAt: fine.createdAt.toISOString(),
       paymentId: fine.paymentId,
       paid: fine.payment?.status === 'PAID',
+      receipt: fine.payment?.receipt
+        ? {
+            receiptNo: fine.payment.receipt.receiptNo,
+            issuedAt: fine.payment.receipt.issuedAt.toISOString(),
+            transactionNo: fine.payment.transactionNo,
+            vat: vatIncluded(Number(fine.amount)),
+          }
+        : null,
+      customerType: fine.customer?.type ?? null,
     }));
   }
 }

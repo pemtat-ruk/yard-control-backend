@@ -7,6 +7,7 @@ import { env } from './config/env.js';
 import { AuditModule } from './modules/audit/audit.module.js';
 import { AuthModule } from './modules/auth/auth.module.js';
 import { BookingModule } from './modules/booking/booking.module.js';
+import { EventsModule } from './modules/events/events.module.js';
 import { FineModule } from './modules/fine/fine.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { JobsModule } from './modules/jobs/jobs.module.js';
@@ -32,6 +33,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     AuditModule,
     SettingsModule,
     RoundsModule,
+    EventsModule,
     AuthModule,
     HealthModule,
     BookingModule,

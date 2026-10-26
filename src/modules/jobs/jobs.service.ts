@@ -17,6 +17,8 @@ import { continuesInNextRound } from '../booking/booking-continuation.js';
 import { bookedDatesWithin, usageWindow } from '../booking/domain/rounds.js';
 import { RoundsService } from '../rounds/rounds.service.js';
 import { SettingsService } from '../settings/settings.service.js';
+import { EventsService } from '../events/events.service.js';
+import { crossedRoundBoundary } from './round-boundary.js';
 
 type NotificationRow = Prisma.NotificationCreateManyInput;
 
@@ -54,6 +56,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
     private readonly prisma: PrismaService,
     private readonly settings: SettingsService,
     private readonly rounds: RoundsService,
+    private readonly events: EventsService,
   ) {}
 
   onModuleInit(): void {
@@ -80,11 +83,30 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       if (Object.values(result).some((count) => count > 0)) {
         this.logger.log(result, 'Scheduled jobs made changes');
       }
+      // ช่องถูกปล่อย/ยกเลิก หรือขึ้นรอบใหม่ (สถานะเปลี่ยนตามเวลา: เริ่มใช้, หมดเวลา) — ผังของทุกคนโหลดใหม่
+      const released =
+        result.expiredPayments + result.cancelledDaily + result.completed > 0;
+      if (released || (await this.roundChanged(now)))
+        this.events.slotsChanged();
     } catch (error) {
       this.logger.error(error, 'Scheduled jobs failed');
     } finally {
       this.running = false;
     }
+  }
+
+  private lastRunAt?: Date;
+
+  private async roundChanged(now: Date): Promise<boolean> {
+    const previous = this.lastRunAt;
+    this.lastRunAt = now;
+    if (!previous) return false;
+    const scheduleFor = await this.rounds.resolver();
+    return crossedRoundBoundary(
+      previous,
+      now,
+      scheduleFor(todayInBangkok(now)),
+    );
   }
 
   // QR หมดอายุ: การจองที่ยังไม่เคยชำระถูกยกเลิกและปล่อยช่องจอดที่ถือไว้
@@ -163,6 +185,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         });
       });
     }
+    this.events.notificationsCreated(
+      overdue.map((booking) => booking.customerId),
+    );
     return overdue.length;
   }
 
@@ -282,6 +307,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       data: rows,
       skipDuplicates: true,
     });
+    if (result.count > 0) {
+      this.events.notificationsCreated(rows.map((row) => row.userId));
+    }
     return result.count;
   }
 
@@ -308,6 +336,11 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
       })),
       skipDuplicates: true,
     });
+    if (result.count > 0) {
+      this.events.notificationsCreated(
+        days.map((day) => day.booking.customerId),
+      );
+    }
     return result.count;
   }
 

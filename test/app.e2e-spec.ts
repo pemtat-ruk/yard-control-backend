@@ -16,8 +16,10 @@ describe('API (e2e)', () => {
       .useValue({
         $queryRaw: () =>
           databaseUp ? Promise.resolve([1]) : Promise.reject(new Error('down')),
-        // ยังไม่เคยตั้งราคา และไม่มีผู้ใช้ในระบบ
+        // ยังไม่เคยตั้งราคา ตารางรอบ ค่าระบบ และไม่มีผู้ใช้ในระบบ (ใช้ค่าตั้งต้นตามเอกสาร)
         rateConfig: { findFirst: () => Promise.resolve(null) },
+        roundConfig: { findMany: () => Promise.resolve([]) },
+        systemSetting: { findMany: () => Promise.resolve([]) },
         user: { findUnique: () => Promise.resolve(null) },
       })
       .compile();
@@ -164,6 +166,8 @@ describe('API (e2e)', () => {
       '/rates',
       '/reports/bookings',
       '/reports/dashboard',
+      '/bookings/import/history',
+      '/bookings/import/history/1',
     ]) {
       const response = await request(app.getHttpServer())
         .get(`/api/v1${path}`)
@@ -201,6 +205,14 @@ describe('API (e2e)', () => {
   it('requires sign-in to get a fine payment', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/v1/fines/1/payment')
+      .expect(401);
+    expect(response.body.error.code).toBe('AUTH_REQUIRED');
+  });
+
+  it('requires sign-in to verify a customer for booking on behalf', async () => {
+    const response = await request(app.getHttpServer())
+      .post('/api/v1/auth/customers/verify')
+      .send({ userType: 'BUYER', phone: '0800000001' })
       .expect(401);
     expect(response.body.error.code).toBe('AUTH_REQUIRED');
   });

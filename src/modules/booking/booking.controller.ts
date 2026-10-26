@@ -31,6 +31,7 @@ import {
 } from './dto/create-booking.dto.js';
 import { QuoteBookingDto } from './dto/quote-booking.dto.js';
 import { RoundsQueryDto } from './dto/rounds-query.dto.js';
+import { PublishesSlots } from '../events/publishes-slots.js';
 
 // controller ทำแค่รับ request และเรียก service — ไม่มี business logic ในไฟล์นี้
 @ApiTags('booking')
@@ -53,6 +54,7 @@ export class BookingController {
     return this.bookingService.quote(dto);
   }
 
+  @PublishesSlots()
   @Post('bookings')
   @RequirePermission('BOOKING_CREATE_SELF', 'BOOKING_CREATE_ON_BEHALF')
   @ApiOperation({ summary: 'สร้างการจองและรายการรอชำระเงิน' })
