@@ -29,6 +29,7 @@ import {
   type LiveYard,
   type SlotView,
 } from './yard.service.js';
+import { PublishesSlots } from '../events/publishes-slots.js';
 
 @ApiTags('yard')
 @Controller('yard')
@@ -62,6 +63,7 @@ export class YardController {
     return this.yardService.getLive(user);
   }
 
+  @PublishesSlots()
   @Post('inspections')
   @RequirePermission('SLOT_INSPECT')
   @ApiOperation({ summary: 'บันทึกผลตรวจ: รถออกแล้ว / ยังจอดอยู่' })
@@ -72,6 +74,7 @@ export class YardController {
     return this.yardService.recordInspection(user, dto);
   }
 
+  @PublishesSlots()
   @Delete('inspections/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermission('SLOT_INSPECT')
@@ -92,6 +95,7 @@ export class YardController {
     return this.yardService.getLayout();
   }
 
+  @PublishesSlots()
   @Post('lots')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermission('LAYOUT_EDIT')
@@ -103,6 +107,7 @@ export class YardController {
     return this.yardService.createLot(user, dto);
   }
 
+  @PublishesSlots()
   @Patch('lots/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermission('LAYOUT_TOGGLE')
@@ -115,6 +120,7 @@ export class YardController {
     return this.yardService.updateLot(user, id, dto);
   }
 
+  @PublishesSlots()
   @Delete('lots/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermission('LAYOUT_EDIT')
@@ -126,6 +132,7 @@ export class YardController {
     return this.yardService.deleteLot(user, id);
   }
 
+  @PublishesSlots()
   @Post('slots')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermission('LAYOUT_EDIT')
@@ -137,6 +144,7 @@ export class YardController {
     return this.yardService.createSlot(user, dto);
   }
 
+  @PublishesSlots()
   @Patch('slots/:id/status')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermission('LAYOUT_TOGGLE')
@@ -149,6 +157,7 @@ export class YardController {
     return this.yardService.updateSlotStatus(user, id, dto);
   }
 
+  @PublishesSlots()
   @Delete('slots/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
   @RequirePermission('LAYOUT_EDIT')

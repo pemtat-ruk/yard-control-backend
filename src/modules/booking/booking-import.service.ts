@@ -1,5 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, type BookingStatus } from '@prisma/client';
 import { ApiException } from '../../common/api-exception.js';
 import {
   bangkokInstant,
@@ -15,6 +15,7 @@ import { isBookableBy, resolveStatus } from '../yard/domain/slot-status.js';
 import { bookingNoFor, tempBookingNo } from './booking-number.js';
 import { CUSTOMER_TYPES } from './booking.service.js';
 import { parseImportFile, type ImportRow } from './domain/import-file.js';
+import { parseImportDetail } from './domain/import-history.js';
 import {
   classifyBooking,
   expandRounds,
@@ -49,6 +50,28 @@ export type ImportPreview = {
 
 export type ImportResult = { bookingNos: string[] };
 
+export type ImportHistoryItem = {
+  id: number;
+  importedAt: string;
+  importedBy: string | null;
+  fileName: string | null; // การนำเข้าก่อนมีการเก็บชื่อไฟล์ = null
+  count: number;
+  bookingNos: string[];
+};
+
+// Screen Design หน้า 14 "ดูรายละเอียด": การจองที่สร้างจากไฟล์หนึ่ง พร้อมสถานะปัจจุบัน
+export type ImportedBooking = {
+  id: number;
+  bookingNo: string;
+  customerName: string;
+  slots: string[];
+  startDate: string;
+  endDate: string;
+  status: BookingStatus;
+};
+
+const IMPORT_HISTORY_LIMIT = 50;
+
 type CheckedRow = ImportRowView & {
   customerId: number | null;
   slotIds: number[];
@@ -81,6 +104,7 @@ export class BookingImportService {
   async commit(
     user: AuthUser,
     csv: string,
+    fileName: string | undefined,
     now: Date = new Date(),
   ): Promise<ImportResult> {
     const rows = await this.check(csv, now);
@@ -162,9 +186,66 @@ export class BookingImportService {
       userId: user.id,
       action: 'BOOKING_IMPORT',
       entity: 'booking',
-      detail: { count: bookingNos.length, bookingNos },
+      detail: {
+        count: bookingNos.length,
+        bookingNos,
+        fileName: fileName?.trim() || null,
+      },
     });
     return { bookingNos };
+  }
+
+  // Screen Design "รายการที่นำเข้า": ไฟล์ที่นำเข้าแล้ว ใคร เมื่อไร กี่รายการ และเลขที่การจองที่สร้าง
+  // อ่านจาก audit log ของการนำเข้า (บันทึกทุกครั้งที่นำเข้าสำเร็จ) จึงไม่ต้องมีตารางเพิ่ม
+  async history(): Promise<ImportHistoryItem[]> {
+    const logs = await this.prisma.auditLog.findMany({
+      where: { action: 'BOOKING_IMPORT' },
+      include: { user: { select: { fullName: true } } },
+      orderBy: { id: 'desc' },
+      take: IMPORT_HISTORY_LIMIT,
+    });
+    return logs.map((log) => {
+      const detail = parseImportDetail(log.detail);
+      return {
+        id: log.id,
+        importedAt: log.createdAt.toISOString(),
+        importedBy: log.user?.fullName ?? null,
+        fileName: detail.fileName,
+        count: detail.bookingNos.length,
+        bookingNos: detail.bookingNos,
+      };
+    });
+  }
+
+  async historyDetail(id: number): Promise<ImportedBooking[]> {
+    const log = await this.prisma.auditLog.findFirst({
+      where: { id, action: 'BOOKING_IMPORT' },
+    });
+    if (!log) {
+      throw new ApiException(
+        HttpStatus.NOT_FOUND,
+        'RECORD_NOT_FOUND',
+        'Import not found',
+      );
+    }
+    const { bookingNos } = parseImportDetail(log.detail);
+    const bookings = await this.prisma.booking.findMany({
+      where: { bookingNo: { in: bookingNos } },
+      include: {
+        customer: { select: { fullName: true } },
+        slots: { select: { slot: { select: { code: true } } } },
+      },
+      orderBy: { id: 'asc' },
+    });
+    return bookings.map((booking) => ({
+      id: booking.id,
+      bookingNo: booking.bookingNo,
+      customerName: booking.customer.fullName,
+      slots: booking.slots.map((item) => item.slot.code).sort(),
+      startDate: fromDbDate(booking.startDate),
+      endDate: fromDbDate(booking.endDate),
+      status: booking.status,
+    }));
   }
 
   private async check(csv: string, now: Date): Promise<CheckedRow[]> {

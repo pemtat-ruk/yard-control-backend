@@ -45,6 +45,7 @@ import {
 import type { CreateBookingDto, PayDaysDto } from './dto/create-booking.dto.js';
 import type { QuoteBookingDto } from './dto/quote-booking.dto.js';
 import { SettingsService } from '../settings/settings.service.js';
+import { vatIncluded, type VatBreakdown } from '../payment/domain/vat.js';
 
 export type RoundsConfig = {
   roundHours: number;
@@ -102,6 +103,8 @@ export type BookingView = {
     receiptNo: string;
     transactionNo: string;
     amount: number;
+    // ใบกำกับภาษีอย่างย่อ: ยอดรวมภาษีแล้ว แยกมูลค่าก่อนภาษีและภาษี
+    vat: VatBreakdown;
     issuedAt: string;
     dates: string[];
   }[];
@@ -210,6 +213,7 @@ function toView(
               receiptNo: payment.receipt.receiptNo,
               transactionNo: payment.transactionNo,
               amount: Number(payment.amount),
+              vat: vatIncluded(Number(payment.amount)),
               issuedAt: payment.receipt.issuedAt.toISOString(),
               dates: booking.days
                 .filter((day) => day.paymentId === payment.id)

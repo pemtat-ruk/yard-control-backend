@@ -11,10 +11,14 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { env } from '../../config/env.js';
-import { CurrentUser, Public } from './auth.decorators.js';
-import { AuthService, SESSION_COOKIE } from './auth.service.js';
+import { CurrentUser, Public, RequirePermission } from './auth.decorators.js';
+import {
+  AuthService,
+  SESSION_COOKIE,
+  type VerifiedCustomer,
+} from './auth.service.js';
 import type { AuthUser } from './auth.types.js';
-import { LoginDto, RegisterDto } from './dto/auth.dto.js';
+import { LoginDto, RegisterDto, VerifyCustomerDto } from './dto/auth.dto.js';
 
 const MS_PER_HOUR = 60 * 60 * 1000;
 // เพดานต่ำกว่า endpoint ทั่วไป กันการเดารหัสผ่านและการไล่เบอร์โทร
@@ -65,6 +69,22 @@ export class AuthController {
   @ApiOperation({ summary: 'ออกจากระบบ' })
   logout(@Res({ passthrough: true }) response: Response): void {
     response.clearCookie(SESSION_COOKIE, COOKIE_OPTIONS);
+  }
+
+  // เพดานเดียวกับ login: ใช้ไล่เบอร์โทรใน CRM ได้ถ้าไม่จำกัด
+  @RequirePermission('BOOKING_CREATE_ON_BEHALF')
+  @Throttle(AUTH_THROTTLE)
+  @Post('customers/verify')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary:
+      'ฝ่ายบริการลูกค้าตรวจข้อมูลผู้ขอใช้บริการกับ CRM ก่อนจองแทน (เพิ่ม/อัปเดตใน YCS ให้)',
+  })
+  verifyCustomer(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: VerifyCustomerDto,
+  ): Promise<VerifiedCustomer> {
+    return this.authService.verifyCustomer(user, dto);
   }
 
   @Get('me')

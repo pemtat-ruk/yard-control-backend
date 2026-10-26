@@ -12,8 +12,9 @@ import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser, RequirePermission } from '../auth/auth.decorators.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { CreateFineDto, FineTargetDto } from './dto/create-fine.dto.js';
-import type { OvertimeFine } from './domain/fine-amount.js';
+import type { SlotsFine } from './domain/fine-amount.js';
 import { FineService, type FineView } from './fine.service.js';
+import { PublishesSlots } from '../events/publishes-slots.js';
 
 @ApiTags('fine')
 @Controller('fines')
@@ -24,10 +25,11 @@ export class FineController {
   @HttpCode(HttpStatus.OK)
   @RequirePermission('SLOT_INSPECT')
   @ApiOperation({ summary: 'คำนวณค่าปรับจอดเกินเวลา ณ ตอนนี้ (ยังไม่บันทึก)' })
-  quote(@Body() dto: FineTargetDto): Promise<OvertimeFine> {
+  quote(@Body() dto: FineTargetDto): Promise<SlotsFine> {
     return this.fineService.quote(dto);
   }
 
+  @PublishesSlots()
   @Post()
   @RequirePermission('SLOT_INSPECT')
   @ApiOperation({ summary: 'บันทึกค่าปรับและสร้างรายการรอชำระ' })

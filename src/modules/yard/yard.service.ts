@@ -387,16 +387,19 @@ export class YardService {
     const earliestEnd = usages.map((usage) => usage.endsAt).sort()[0];
     const fines = await this.prisma.fine.findMany({
       where: {
-        slotId: { in: [...overtime.keys()] },
+        slots: { some: { slotId: { in: [...overtime.keys()] } } },
         createdAt: { gte: new Date(earliestEnd) },
       },
-      include: { payment: { select: { status: true } } },
+      include: {
+        payment: { select: { status: true } },
+        slots: { select: { slotId: true } },
+      },
       orderBy: { createdAt: 'desc' },
     });
     for (const [slotId, usage] of overtime) {
       const fine = fines.find(
         (item) =>
-          item.slotId === slotId &&
+          item.slots.some((slot) => slot.slotId === slotId) &&
           item.customerId === usage.customerId &&
           item.createdAt.toISOString() >= usage.endsAt,
       );

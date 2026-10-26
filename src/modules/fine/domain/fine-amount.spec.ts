@@ -1,4 +1,29 @@
-import { overtimeFine, overtimeMinutesAt } from './fine-amount.js';
+import { overtimeFine, overtimeMinutesAt, slotsFine } from './fine-amount.js';
+
+describe('fine for several slots', () => {
+  const perSlot = overtimeFine({
+    overtimeMinutes: 30,
+    pricePerSlotRound: 100,
+    multiplier: 2,
+    roundHours: 4,
+  });
+
+  it('multiplies the per-slot amount by the number of slots fined', () => {
+    expect(slotsFine(perSlot, 3)).toMatchObject({
+      amount: 200,
+      slots: 3,
+      total: 600,
+    });
+  });
+
+  it('keeps the per-slot amount as the total for a single slot', () => {
+    expect(slotsFine(perSlot, 1).total).toBe(200);
+  });
+
+  it('rejects a fine without any slot', () => {
+    expect(() => slotsFine(perSlot, 0)).toThrow(RangeError);
+  });
+});
 
 describe('overtime fine', () => {
   it('charges each started 4-hour round at the booking price times the multiplier', () => {

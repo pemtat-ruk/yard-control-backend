@@ -11,7 +11,19 @@ import {
   createSessionToken,
   verifySessionToken,
 } from './domain/session-token.js';
-import type { LoginDto, RegisterDto } from './dto/auth.dto.js';
+import type {
+  LoginDto,
+  RegisterDto,
+  VerifyCustomerDto,
+} from './dto/auth.dto.js';
+
+// ผู้ขอใช้บริการที่ฝ่ายบริการลูกค้าจองแทนได้ (รูปเดียวกับผลค้นหาใน GET /bookings/customers)
+export type VerifiedCustomer = {
+  id: number;
+  name: string;
+  phone: string | null;
+  userType: User['type'];
+};
 
 export const SESSION_COOKIE = 'ycs_session';
 
@@ -40,6 +52,15 @@ function invalidCredentials(): ApiException {
     HttpStatus.UNAUTHORIZED,
     'AUTH_INVALID_CREDENTIALS',
     'Invalid credentials',
+  );
+}
+
+function laborCardRequired(): ApiException {
+  return new ApiException(
+    HttpStatus.BAD_REQUEST,
+    'VALIDATION_FAILED',
+    'Request body is invalid',
+    ['laborCardNo is required for green-shirt workers'],
   );
 }
 
@@ -156,17 +177,51 @@ export class AuthService {
     });
   }
 
+  // Workflow ข้อ 3 / Screen Design "จองแทน": ฝ่ายบริการลูกค้ากด "ตรวจสอบข้อมูล" ด้วยประเภทลูกค้า + บัตรแรงงาน/เบอร์โทร
+  // ตรวจกับ CRM แบบเดียวกับตอนลูกค้าเข้าสู่ระบบ — พบแล้วเพิ่ม/อัปเดตใน YCS ให้ จองแทนได้แม้ลูกค้าไม่เคยเข้าสู่ระบบ
+  async verifyCustomer(
+    actor: AuthUser,
+    dto: VerifyCustomerDto,
+  ): Promise<VerifiedCustomer> {
+    if (dto.userType === 'GREEN_SHIRT' && !dto.laborCardNo?.trim()) {
+      throw laborCardRequired();
+    }
+    const customer = await this.syncCustomerFromCrm(dto);
+    // เบอร์นี้เปิดสิทธิ์ไว้เป็นผู้ใช้อีกประเภท — ให้เจ้าหน้าที่เลือกประเภทให้ถูก ไม่สลับให้เอง
+    if (!customer) {
+      throw new ApiException(
+        HttpStatus.CONFLICT,
+        'CUSTOMER_TYPE_MISMATCH',
+        'This phone number is registered as another customer type',
+      );
+    }
+    if (!customer.isActive) {
+      throw new ApiException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        'CUSTOMER_INACTIVE',
+        'This customer account is disabled',
+      );
+    }
+    await this.audit.record({
+      userId: actor.id,
+      action: 'CUSTOMER_VERIFY',
+      entity: 'user',
+      entityId: customer.id,
+    });
+    return {
+      id: customer.id,
+      name: customer.fullName,
+      phone: customer.phone,
+      userType: customer.type,
+    };
+  }
+
   // ข้อ 1: ต้องพบข้อมูลใน CRM ก่อน จึงเปิดสิทธิ์ใช้งานใน YCS
   async register(dto: RegisterDto): Promise<void> {
     const laborCardNo =
       dto.userType === 'GREEN_SHIRT' ? dto.laborCardNo?.trim() : undefined;
     if (dto.userType === 'GREEN_SHIRT' && !laborCardNo) {
-      throw new ApiException(
-        HttpStatus.BAD_REQUEST,
-        'VALIDATION_FAILED',
-        'Request body is invalid',
-        ['laborCardNo is required for green-shirt workers'],
-      );
+      throw laborCardRequired();
     }
 
     const crmCustomer = await this.crm.findCustomer({

@@ -30,6 +30,17 @@ export function overtimeFine(input: {
   };
 }
 
+// ค่าปรับใบเดียวหลายช่องของการจองเดียวกัน (Screen Design หน้า 16): ทุกช่องหมดเวลาพร้อมกัน
+// เวลาที่เกินจึงเท่ากัน ยอดรวม = ยอดต่อช่อง × จำนวนช่อง
+export type SlotsFine = OvertimeFine & { slots: number; total: number };
+
+export function slotsFine(perSlot: OvertimeFine, slots: number): SlotsFine {
+  if (!Number.isInteger(slots) || slots < 1) {
+    throw new RangeError('A fine needs at least one slot');
+  }
+  return { ...perSlot, slots, total: perSlot.amount * slots };
+}
+
 // เวลาที่จอดเกินของช่องหนึ่ง ณ ตอนนี้: นับจากการใช้งานที่หมดล่าสุด
 // ยังอยู่ในช่วงที่จองไว้ (รวมจองรอบต่อไว้แล้ว) = ไม่เกินเวลา ปรับไม่ได้ (คืน null)
 export function overtimeMinutesAt(
