@@ -74,3 +74,48 @@ describe('overtime minutes', () => {
     expect(overtimeMinutesAt(windows, at('2026-10-14T07:00:00Z'))).toBeNull();
   });
 });
+
+// ขอบของการปัดรอบ (รอบละ 4 ชม. = 240 นาที) และขอบเวลาที่รอบที่จองจบ
+describe('overtime boundaries', () => {
+  const fineFor = (overtimeMinutes: number) =>
+    overtimeFine({
+      overtimeMinutes,
+      pricePerSlotRound: 100,
+      multiplier: 2,
+      roundHours: 4,
+    }).rounds;
+
+  it('charges one round up to exactly 240 minutes over and two from 241', () => {
+    expect(fineFor(240)).toBe(1);
+    expect(fineFor(241)).toBe(2);
+  });
+
+  const at = (iso: string) => new Date(iso);
+  // 07:00–11:00 เวลาไทย
+  const windows = [
+    {
+      startsAt: at('2026-10-27T00:00:00Z'),
+      endsAt: at('2026-10-27T04:00:00Z'),
+    },
+  ];
+
+  it('is not overtime one second before the booked time ends', () => {
+    expect(overtimeMinutesAt(windows, at('2026-10-27T03:59:59Z'))).toBeNull();
+  });
+
+  it('starts counting overtime exactly when the booked time ends', () => {
+    expect(overtimeMinutesAt(windows, at('2026-10-27T04:00:00Z'))).toBe(0);
+    expect(overtimeMinutesAt(windows, at('2026-10-27T04:01:00Z'))).toBe(1);
+  });
+
+  it('keeps counting across midnight', () => {
+    // จบ 23:00 เวลาไทย แล้วตรวจตอน 01:00 ของวันถัดไป = เกิน 120 นาที
+    const lateRound = [
+      {
+        startsAt: at('2026-10-27T12:00:00Z'),
+        endsAt: at('2026-10-27T16:00:00Z'),
+      },
+    ];
+    expect(overtimeMinutesAt(lateRound, at('2026-10-27T18:00:00Z'))).toBe(120);
+  });
+});

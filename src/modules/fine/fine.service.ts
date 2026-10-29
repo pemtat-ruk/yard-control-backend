@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { ApiException } from '../../common/api-exception.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
@@ -15,12 +16,34 @@ import {
   slotsFine,
   type SlotsFine,
 } from './domain/fine-amount.js';
-import type { CreateFineDto, FineTargetDto } from './dto/create-fine.dto.js';
-import { vatIncluded, type VatBreakdown } from '../payment/domain/vat.js';
+import type {
+  CreateFineDto,
+  FineTargetDto,
+  ListFinesQueryDto,
+} from './dto/create-fine.dto.js';
+import { storedVat, type VatBreakdown } from '../payment/domain/vat.js';
 
 const FINE_NO_DIGITS = 6;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
-const LIST_LIMIT = 100;
+const MS_PER_MINUTE = 60 * 1000;
+// นาทีที่เกินถูกปัดลง จึงย้อนเพิ่ม 1 นาทีให้ครอบเวลาที่รอบจบจริง (การจองหลายวันมีรอบห่างกันเป็นชั่วโมง ไม่ทับรอบก่อน)
+const OVERTIME_START_SLACK_MINUTES = 1;
+// ค่าปรับทีละหน้า (โหลดต่อด้วย before)
+const LIST_LIMIT = 50;
+
+const FINE_INCLUDE = {
+  customer: { select: { fullName: true, type: true } },
+  booking: { select: { bookingNo: true } },
+  slots: {
+    select: { slot: { select: { code: true } } },
+    orderBy: { slot: { code: 'asc' } },
+  },
+  payment: {
+    select: { status: true, transactionNo: true, receipt: true },
+  },
+} satisfies Prisma.FineInclude;
+type FineRecord = Prisma.FineGetPayload<{ include: typeof FINE_INCLUDE }>;
+
 const MINUTES_PER_HOUR = 60;
 
 // เหตุผลที่บันทึกในค่าปรับ (ลูกค้าเห็นในรายการค่าปรับ)
@@ -60,6 +83,30 @@ export type FineView = {
   // ส่งเท่าที่ใบเสร็จใช้ ไม่ส่งเบอร์โทร/บัตรแรงงาน (PDPA: เก็บและเปิดเผยเท่าที่จำเป็น)
   customerType: UserType | null;
 };
+
+function toFineView(fine: FineRecord): FineView {
+  return {
+    id: fine.id,
+    fineNo: fine.fineNo,
+    customerName: fine.customer?.fullName ?? null,
+    slotCodes: fine.slots.map((item) => item.slot.code),
+    bookingNo: fine.booking?.bookingNo ?? null,
+    reason: fine.reason,
+    amount: Number(fine.amount),
+    createdAt: fine.createdAt.toISOString(),
+    paymentId: fine.paymentId,
+    paid: fine.payment?.status === 'PAID',
+    receipt: fine.payment?.receipt
+      ? {
+          receiptNo: fine.payment.receipt.receiptNo,
+          issuedAt: fine.payment.receipt.issuedAt.toISOString(),
+          transactionNo: fine.payment.transactionNo,
+          vat: storedVat(fine.payment.receipt),
+        }
+      : null,
+    customerType: fine.customer?.type ?? null,
+  };
+}
 
 @Injectable()
 export class FineService {
@@ -132,6 +179,29 @@ export class FineService {
     const { booking, fine: calculated } = await this.calculate(dto, now);
 
     const { fineId, paymentId } = await this.prisma.$transaction(async (tx) => {
+      // ล็อกการจองนี้: ผู้ตรวจสองคนกดบันทึกค่าปรับพร้อมกันจะเข้าทีละคำขอ คำขอหลังเห็นค่าปรับของคำขอแรก
+      await tx.$queryRaw`SELECT id FROM bookings WHERE id = ${booking.id} FOR UPDATE`;
+      // ช่องเดียวกันถูกปรับได้ครั้งเดียวต่อการจอดเกินหนึ่งครั้ง (นับจากรอบที่จองจบ) — การจองหลายวันที่เกินอีกวันปรับใหม่ได้
+      const overtimeStart = new Date(
+        now.getTime() -
+          (calculated.overtimeMinutes + OVERTIME_START_SLACK_MINUTES) *
+            MS_PER_MINUTE,
+      );
+      const finedSlots = await tx.fineSlot.findMany({
+        where: {
+          slotId: { in: dto.slotIds },
+          fine: { bookingId: booking.id, createdAt: { gte: overtimeStart } },
+        },
+        select: { slot: { select: { code: true } } },
+      });
+      if (finedSlots.length > 0) {
+        throw new ApiException(
+          HttpStatus.CONFLICT,
+          'FINE_ALREADY_ISSUED',
+          'These slots were already fined for this overtime',
+          finedSlots.map((item) => item.slot.code),
+        );
+      }
       const payment = await this.payments.createPending(
         tx,
         {
@@ -234,43 +304,38 @@ export class FineService {
   }
 
   // ผู้ขอใช้บริการเห็นเฉพาะค่าปรับของตนเอง พนักงานเห็นทั้งหมด
-  async list(user: AuthUser): Promise<FineView[]> {
+  async list(user: AuthUser, query: ListFinesQueryDto): Promise<FineView[]> {
     const fines = await this.prisma.fine.findMany({
-      where: user.type === 'EMPLOYEE' ? {} : { customerId: user.id },
-      include: {
-        customer: { select: { fullName: true, type: true } },
-        booking: { select: { bookingNo: true } },
-        slots: {
-          select: { slot: { select: { code: true } } },
-          orderBy: { slot: { code: 'asc' } },
-        },
-        payment: {
-          select: { status: true, transactionNo: true, receipt: true },
-        },
+      where: {
+        AND: [
+          user.type === 'EMPLOYEE' ? {} : { customerId: user.id },
+          query.unpaid ? { NOT: { payment: { status: 'PAID' } } } : {},
+          !query.unpaid && query.before ? { id: { lt: query.before } } : {},
+        ],
       },
+      include: FINE_INCLUDE,
       orderBy: { id: 'desc' },
-      take: LIST_LIMIT,
+      take: query.unpaid ? undefined : LIST_LIMIT,
     });
-    return fines.map((fine) => ({
-      id: fine.id,
-      fineNo: fine.fineNo,
-      customerName: fine.customer?.fullName ?? null,
-      slotCodes: fine.slots.map((item) => item.slot.code),
-      bookingNo: fine.booking?.bookingNo ?? null,
-      reason: fine.reason,
-      amount: Number(fine.amount),
-      createdAt: fine.createdAt.toISOString(),
-      paymentId: fine.paymentId,
-      paid: fine.payment?.status === 'PAID',
-      receipt: fine.payment?.receipt
-        ? {
-            receiptNo: fine.payment.receipt.receiptNo,
-            issuedAt: fine.payment.receipt.issuedAt.toISOString(),
-            transactionNo: fine.payment.transactionNo,
-            vat: vatIncluded(Number(fine.amount)),
-          }
-        : null,
-      customerType: fine.customer?.type ?? null,
-    }));
+    return fines.map(toFineView);
+  }
+
+  // ใบเดียว (หน้าใบเสร็จค่าปรับ) — ผู้ขอใช้บริการเปิดได้เฉพาะของตนเอง ของคนอื่น = ไม่พบ
+  async get(user: AuthUser, id: number): Promise<FineView> {
+    const fine = await this.prisma.fine.findFirst({
+      where: {
+        id,
+        ...(user.type === 'EMPLOYEE' ? {} : { customerId: user.id }),
+      },
+      include: FINE_INCLUDE,
+    });
+    if (!fine) {
+      throw new ApiException(
+        HttpStatus.NOT_FOUND,
+        'RECORD_NOT_FOUND',
+        'Fine not found',
+      );
+    }
+    return toFineView(fine);
   }
 }

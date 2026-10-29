@@ -9,6 +9,7 @@ import type { AuthUser } from '../auth/auth.types.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PaymentGateway } from './payment-gateway.js';
 import { EventsService } from '../events/events.service.js';
+import { vatIncluded } from './domain/vat.js';
 
 export type PaymentView = {
   id: number;
@@ -140,7 +141,14 @@ export class PaymentService {
       });
       if (!payment) throw notFound();
       if (payment.status === 'PAID') return;
-      if (payment.status !== 'PENDING' || payment.expiresAt <= now) {
+      // QR ค่าจองที่ไม่มีวันผูกอยู่แล้ว = ถูก QR ใหม่แทน (วันเหล่านั้นอาจชำระด้วย QR อื่นไปแล้ว) ห้ามรับเงินซ้ำ
+      const superseded =
+        payment.purpose === 'BOOKING' && payment.bookingDays.length === 0;
+      if (
+        payment.status !== 'PENDING' ||
+        payment.expiresAt <= now ||
+        superseded
+      ) {
         throw new ApiException(
           HttpStatus.CONFLICT,
           'PAYMENT_EXPIRED',
@@ -161,10 +169,15 @@ export class PaymentService {
         payment.fine?.issuedById,
       ].filter((userId): userId is number => typeof userId === 'number');
 
+      // ใบกำกับภาษีอย่างย่อ: บันทึกภาษี ณ วันที่ออก ไม่คำนวณใหม่ตอนเปิดดู
+      const vat = vatIncluded(Number(payment.amount));
       await tx.receipt.create({
         data: {
           paymentId: id,
           receiptNo: `RC${String(id).padStart(RECEIPT_NO_DIGITS, '0')}`,
+          vatRatePercent: vat.ratePercent,
+          amountBeforeVat: vat.beforeVat,
+          vatAmount: vat.vat,
         },
       });
       if (payment.bookingId === null) return;

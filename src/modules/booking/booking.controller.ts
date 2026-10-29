@@ -27,6 +27,7 @@ import {
 import {
   CreateBookingDto,
   PayDaysDto,
+  ListBookingsQueryDto,
   SearchQueryDto,
 } from './dto/create-booking.dto.js';
 import { QuoteBookingDto } from './dto/quote-booking.dto.js';
@@ -71,9 +72,9 @@ export class BookingController {
   })
   list(
     @CurrentUser() user: AuthUser,
-    @Query() query: SearchQueryDto,
+    @Query() query: ListBookingsQueryDto,
   ): Promise<BookingView[]> {
-    return this.bookingService.list(user, query.q);
+    return this.bookingService.list(user, query);
   }
 
   // ต้องอยู่ก่อน bookings/:id ไม่เช่นนั้น "schedule" จะถูกอ่านเป็น id

@@ -6,12 +6,14 @@ import {
   IsArray,
   IsIn,
   IsInt,
+  IsNumber,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
   Min,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { DATE_PATTERN } from '../../../common/service-date.js';
 import type { PaymentPlan } from '../../payment/domain/schedule.js';
 
@@ -70,6 +72,15 @@ export class CreateBookingDto {
   @IsOptional()
   @IsInt()
   customerId?: number;
+
+  @ApiPropertyOptional({
+    description:
+      'ยอดรวมที่ผู้ใช้เห็นตอนกดยืนยัน — ราคาเปลี่ยนก่อนยืนยันจะได้ PRICE_CHANGED แทนการเก็บยอดใหม่เงียบๆ',
+  })
+  @IsOptional()
+  @IsNumber({ maxDecimalPlaces: 2 })
+  @Min(0)
+  expectedTotal?: number;
 }
 
 // ข้อ 6.1: ชำระค่าบริการรายวันของการจองแบบวันต่อวัน (หลายวันในครั้งเดียวได้)
@@ -89,4 +100,26 @@ export class SearchQueryDto {
   @IsString()
   @MaxLength(SEARCH_MAX_LENGTH)
   q?: string;
+}
+
+// ALL = ทุกรายการ ทีละหน้า; PENDING = ยังต้องชำระ; ACTIVE = ยังไม่จบ (รอชำระ/ยืนยันแล้ว และยังไม่เลยวันสุดท้าย)
+// PENDING / ACTIVE ส่งครบทุกรายการ ไม่ตัดหน้า — หน้ารอชำระ หน้าแรก และปฏิทินต้องไม่พลาดการจองเก่าที่ยังใช้อยู่
+export const BOOKING_SCOPES = ['ALL', 'PENDING', 'ACTIVE'] as const;
+export type BookingScope = (typeof BOOKING_SCOPES)[number];
+
+export class ListBookingsQueryDto extends SearchQueryDto {
+  @ApiPropertyOptional({ enum: BOOKING_SCOPES, default: 'ALL' })
+  @IsOptional()
+  @IsIn(BOOKING_SCOPES)
+  scope?: BookingScope;
+
+  @ApiPropertyOptional({
+    description:
+      'โหลดต่อ (scope ALL): เฉพาะการจองที่ id น้อยกว่านี้ — ส่ง id ของรายการสุดท้ายที่มีอยู่',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  before?: number;
 }

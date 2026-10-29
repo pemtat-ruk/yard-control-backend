@@ -62,6 +62,18 @@ describe('ApiExceptionFilter', () => {
     expect(logError).toHaveBeenCalled();
   });
 
+  it('answers a body over the size limit with 413 instead of 500', () => {
+    const tooLarge = Object.assign(new Error('request entity too large'), {
+      type: 'entity.too.large',
+    });
+    const loggedBefore = logError.mock.calls.length;
+    const sent = respondTo(tooLarge);
+    expect(sent.status).toBe(413);
+    expect(sent.body.error.code).toBe('PAYLOAD_TOO_LARGE');
+    // เป็นความผิดของ request จึงไม่ log เป็น error ของระบบ
+    expect(logError.mock.calls.length).toBe(loggedBefore);
+  });
+
   it('treats an unmapped database error as unexpected', () => {
     expect(respondTo(prismaError('P1001')).status).toBe(500);
   });

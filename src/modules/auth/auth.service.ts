@@ -232,6 +232,14 @@ export class AuthService {
     const existing = await this.prisma.user.findFirst({
       where: { OR: [{ phone: dto.phone }, { crmId: crmCustomer.crmId }] },
     });
+    // เปิดสิทธิ์ไว้เป็นอีกประเภท: บอกให้เลือกประเภทให้ถูก — "ลงทะเบียนแล้ว เข้าสู่ระบบได้เลย" จะพาไปเข้าแท็บเดิมแล้วเข้าไม่ได้
+    if (existing && existing.type !== dto.userType) {
+      throw new ApiException(
+        HttpStatus.CONFLICT,
+        'CUSTOMER_TYPE_MISMATCH',
+        'This phone number is registered as another customer type',
+      );
+    }
     if (existing) {
       throw new ApiException(
         HttpStatus.CONFLICT,

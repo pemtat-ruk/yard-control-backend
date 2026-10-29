@@ -48,16 +48,23 @@ model User {
   crmId        String?     @unique @map("crm_id") @db.VarChar(100) // ผู้ขอใช้บริการต้องมีข้อมูลใน CRM ก่อน
   fullName     String      @map("full_name") @db.VarChar(255)
   isActive     Boolean     @default(true) @map("is_active")
-  createdAt    DateTime    @default(now()) @map("created_at")
-  updatedAt    DateTime    @updatedAt @map("updated_at")
+  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt    DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  permissions   UserPermission[]
-  bookings      Booking[]        @relation("BookingCustomer")
-  bookingsMade  Booking[]        @relation("BookingCreatedBy")
-  finesIssued   Fine[]           @relation("FineIssuedBy")
-  finesReceived Fine[]           @relation("FineCustomer")
-  notifications Notification[]
-  auditLogs     AuditLog[]
+  permissions        UserPermission[] @relation("PermissionHolder")
+  // สิ่งที่ผู้ใช้คนนี้ทำไว้ (FK ของผู้ทำรายการ)
+  permissionsGranted UserPermission[] @relation("PermissionGrantedBy")
+  slotStatusChanges  SlotStatusLog[]
+  roundConfigs       RoundConfig[]
+  rateConfigs        RateConfig[]
+  inspections        SlotInspection[]
+  settingsUpdated    SystemSetting[]
+  bookings           Booking[]        @relation("BookingCustomer")
+  bookingsMade       Booking[]        @relation("BookingCreatedBy")
+  finesIssued        Fine[]           @relation("FineIssuedBy")
+  finesReceived      Fine[]           @relation("FineCustomer")
+  notifications      Notification[]
+  auditLogs          AuditLog[]
 
   @@map("users")
 }
@@ -66,9 +73,10 @@ model UserPermission {
   userId      Int        @map("user_id")
   permission  Permission
   grantedById Int?       @map("granted_by_id")
-  grantedAt   DateTime   @default(now()) @map("granted_at")
+  grantedAt   DateTime   @default(now()) @map("granted_at") @db.Timestamptz(3)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User  @relation("PermissionHolder", fields: [userId], references: [id], onDelete: Cascade)
+  grantedBy User? @relation("PermissionGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
 
   @@id([userId, permission])
   @@map("user_permissions")
@@ -84,16 +92,17 @@ enum SlotBaseStatus {
 }
 
 model ParkingLot {
-  id        Int      @id @default(autoincrement())
-  code      String   @unique @db.VarChar(20)
-  name      String   @db.VarChar(255)
-  isOpen    Boolean  @default(true) @map("is_open")
-  sortOrder Int      @default(0) @map("sort_order")
-  deletedAt DateTime? @map("deleted_at")
-  createdAt DateTime @default(now()) @map("created_at")
-  updatedAt DateTime @updatedAt @map("updated_at")
+  id        Int       @id @default(autoincrement())
+  code      String    @unique @db.VarChar(20)
+  name      String    @db.VarChar(255)
+  isOpen    Boolean   @default(true) @map("is_open")
+  sortOrder Int       @default(0) @map("sort_order")
+  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   slots ParkingSlot[]
+  rates RateConfig[]
 
   @@map("parking_lots")
 }
@@ -103,14 +112,11 @@ model ParkingSlot {
   lotId      Int            @map("lot_id")
   code       String         @db.VarChar(20)
   baseStatus SlotBaseStatus @default(OPEN) @map("base_status")
-  // ตำแหน่งบนแผนผัง (grid)
-  gridRow    Int            @default(0) @map("grid_row")
-  gridCol    Int            @default(0) @map("grid_col")
-  deletedAt  DateTime?      @map("deleted_at")
-  createdAt  DateTime       @default(now()) @map("created_at")
-  updatedAt  DateTime       @updatedAt @map("updated_at")
+  deletedAt  DateTime?      @map("deleted_at") @db.Timestamptz(3)
+  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  lot         ParkingLot      @relation(fields: [lotId], references: [id])
+  lot         ParkingLot       @relation(fields: [lotId], references: [id])
   occupancies SlotOccupancy[]
   bookings    BookingSlot[]
   fineSlots   FineSlot[]
@@ -128,9 +134,10 @@ model SlotStatusLog {
   toStatus    SlotBaseStatus @map("to_status")
   changedById Int            @map("changed_by_id")
   reason      String?        @db.VarChar(500)
-  createdAt   DateTime       @default(now()) @map("created_at")
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  slot ParkingSlot @relation(fields: [slotId], references: [id])
+  slot      ParkingSlot @relation(fields: [slotId], references: [id])
+  changedBy User        @relation(fields: [changedById], references: [id])
 
   @@index([slotId, createdAt])
   @@map("slot_status_logs")
@@ -146,7 +153,9 @@ model RoundConfig {
   firstHour     Int      @map("first_hour") // ชั่วโมงเริ่มรอบแรกของวันบริการ 0–23
   roundHours    Int      @map("round_hours") // ชั่วโมงต่อรอบ หาร 24 ลงตัว
   createdById   Int      @map("created_by_id")
-  createdAt     DateTime @default(now()) @map("created_at")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  createdBy User @relation(fields: [createdById], references: [id])
 
   @@map("round_configs")
 }
@@ -155,12 +164,15 @@ model RoundConfig {
 
 model RateConfig {
   id                Int      @id @default(autoincrement())
-  lotId             Int?     @map("lot_id") // null = ใช้กับทุกลาน
+  lotId             Int?     @map("lot_id") // null = ใช้กับทุกลาน — ตอนนี้ราคาใช้กับทุกลาน (รอคำตอบเรื่องระดับราคา)
   pricePerSlotRound Decimal  @map("price_per_slot_round") @db.Decimal(12, 2)
   effectiveFrom     DateTime @map("effective_from") @db.Date
   permitRef         String   @map("permit_ref") @db.VarChar(100) // เลขที่หนังสืออนุญาต
   createdById       Int      @map("created_by_id")
-  createdAt         DateTime @default(now()) @map("created_at")
+  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  lot       ParkingLot? @relation(fields: [lotId], references: [id])
+  createdBy User        @relation(fields: [createdById], references: [id])
 
   @@index([lotId, effectiveFrom])
   @@map("rate_configs")
@@ -185,6 +197,12 @@ enum BookingStatus {
   CANCELLED // ยกเลิกอัตโนมัติเมื่อไม่ชำระตามกำหนด — ไม่คืนเงิน
 }
 
+// เหตุที่ระบบยกเลิกการจองอัตโนมัติ (frontend แปลเป็นข้อความ)
+enum BookingCancelReason {
+  PAYMENT_EXPIRED // ไม่ชำระ QR ตอนยืนยันการจองภายในเวลา
+  DAILY_PAYMENT_OVERDUE // ไม่ชำระค่าบริการรายวันตามกำหนด
+}
+
 enum BookingSource {
   SELF
   CUSTOMER_SERVICE
@@ -192,28 +210,28 @@ enum BookingSource {
 }
 
 model Booking {
-  id           Int           @id @default(autoincrement())
-  bookingNo    String        @unique @map("booking_no") @db.VarChar(30)
-  customerId   Int           @map("customer_id")
-  createdById  Int           @map("created_by_id")
-  source       BookingSource @default(SELF)
-  type         BookingType
-  paymentPlan  PaymentPlan   @default(FULL) @map("payment_plan")
-  status       BookingStatus @default(PENDING_PAYMENT)
-  startDate    DateTime      @map("start_date") @db.Date // วันบริการ (เริ่ม 07:00)
-  endDate      DateTime      @map("end_date") @db.Date
-  startRound   Int           @map("start_round") // 0 = 07:00, 1 = 11:00, ...
-  roundCount   Int           @map("round_count") // ขั้นต่ำ 1 รอบ (4 ชม.)
+  id                Int                  @id @default(autoincrement())
+  bookingNo         String               @unique @map("booking_no") @db.VarChar(30)
+  customerId        Int                  @map("customer_id")
+  createdById       Int                  @map("created_by_id")
+  source            BookingSource        @default(SELF)
+  type              BookingType
+  paymentPlan       PaymentPlan          @default(FULL) @map("payment_plan")
+  status            BookingStatus        @default(PENDING_PAYMENT)
+  startDate         DateTime             @map("start_date") @db.Date // วันบริการ (เริ่มรอบแรกของวันตาม round_configs)
+  endDate           DateTime             @map("end_date") @db.Date
+  startRound        Int                  @map("start_round") // ลำดับรอบเริ่มของวันบริการ (0 = รอบแรก) — เวลาจริงดูจาก round_configs ที่มีผลวันนั้น
+  roundCount        Int                  @map("round_count") // ขั้นต่ำ 1 รอบ
   // อัตรา ณ วันที่จอง — การเปลี่ยนราคาภายหลังไม่กระทบการจองเดิม
-  pricePerSlotRound Decimal  @map("price_per_slot_round") @db.Decimal(12, 2)
-  totalAmount  Decimal       @map("total_amount") @db.Decimal(12, 2)
-  cancelledAt  DateTime?     @map("cancelled_at")
-  cancelReason String?       @map("cancel_reason") @db.VarChar(255)
-  createdAt    DateTime      @default(now()) @map("created_at")
-  updatedAt    DateTime      @updatedAt @map("updated_at")
+  pricePerSlotRound Decimal              @map("price_per_slot_round") @db.Decimal(12, 2)
+  totalAmount       Decimal              @map("total_amount") @db.Decimal(12, 2)
+  cancelledAt       DateTime?            @map("cancelled_at") @db.Timestamptz(3)
+  cancelReason      BookingCancelReason? @map("cancel_reason")
+  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
 
-  customer    User            @relation("BookingCustomer", fields: [customerId], references: [id])
-  createdBy   User            @relation("BookingCreatedBy", fields: [createdById], references: [id])
+  customer    User             @relation("BookingCustomer", fields: [customerId], references: [id])
+  createdBy   User             @relation("BookingCreatedBy", fields: [createdById], references: [id])
   slots       BookingSlot[]
   days        BookingDay[]
   occupancies SlotOccupancy[]
@@ -235,6 +253,7 @@ model BookingSlot {
   slot    ParkingSlot @relation(fields: [slotId], references: [id])
 
   @@id([bookingId, slotId])
+  @@index([slotId])
   @@map("booking_slots")
 }
 
@@ -244,15 +263,16 @@ model BookingDay {
   bookingId   Int       @map("booking_id")
   serviceDate DateTime  @map("service_date") @db.Date
   amount      Decimal   @db.Decimal(12, 2)
-  dueAt       DateTime  @map("due_at") // เที่ยงคืนก่อนวันใช้งานจริง
+  dueAt       DateTime  @map("due_at") @db.Timestamptz(3) // เที่ยงคืนก่อนวันใช้งานจริง
   paymentId   Int?      @map("payment_id")
-  paidAt      DateTime? @map("paid_at")
+  paidAt      DateTime? @map("paid_at") @db.Timestamptz(3)
 
   booking Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
   payment Payment? @relation(fields: [paymentId], references: [id])
 
   @@unique([bookingId, serviceDate])
   @@index([dueAt, paidAt])
+  @@index([paymentId])
   @@map("booking_days")
 }
 
@@ -278,7 +298,6 @@ enum PaymentStatus {
   PENDING
   PAID
   EXPIRED
-  FAILED
 }
 
 enum PaymentPurpose {
@@ -295,10 +314,10 @@ model Payment {
   status        PaymentStatus  @default(PENDING)
   qrPayload     String?        @map("qr_payload") @db.Text
   gatewayRef    String?        @unique @map("gateway_ref") @db.VarChar(100)
-  expiresAt     DateTime       @map("expires_at") // "ชำระภายใน [วันและเวลา]"
-  paidAt        DateTime?      @map("paid_at")
-  createdAt     DateTime       @default(now()) @map("created_at")
-  updatedAt     DateTime       @updatedAt @map("updated_at")
+  expiresAt     DateTime       @map("expires_at") @db.Timestamptz(3) // "ชำระภายใน [วันและเวลา]"
+  paidAt        DateTime?      @map("paid_at") @db.Timestamptz(3)
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
 
   booking     Booking?     @relation(fields: [bookingId], references: [id])
   bookingDays BookingDay[]
@@ -306,14 +325,19 @@ model Payment {
   fine        Fine?
 
   @@index([status, expiresAt])
+  @@index([bookingId])
   @@map("payments")
 }
 
 model Receipt {
-  id        Int      @id @default(autoincrement())
-  receiptNo String   @unique @map("receipt_no") @db.VarChar(30)
-  paymentId Int      @unique @map("payment_id")
-  issuedAt  DateTime @default(now()) @map("issued_at")
+  id              Int      @id @default(autoincrement())
+  receiptNo       String   @unique @map("receipt_no") @db.VarChar(30)
+  paymentId       Int      @unique @map("payment_id")
+  // ใบกำกับภาษีอย่างย่อ: เก็บภาษี ณ วันที่ออก ใบที่ออกแล้วต้องไม่เปลี่ยนแม้อัตราภาษีเปลี่ยนภายหลัง
+  vatRatePercent  Decimal  @map("vat_rate_percent") @db.Decimal(5, 2)
+  amountBeforeVat Decimal  @map("amount_before_vat") @db.Decimal(12, 2)
+  vatAmount       Decimal  @map("vat_amount") @db.Decimal(12, 2)
+  issuedAt        DateTime @default(now()) @map("issued_at") @db.Timestamptz(3)
 
   payment Payment @relation(fields: [paymentId], references: [id])
 
@@ -325,7 +349,7 @@ model Ticket {
   ticketNo    String   @unique @map("ticket_no") @db.VarChar(30)
   bookingId   Int      @map("booking_id")
   serviceDate DateTime @map("service_date") @db.Date
-  issuedAt    DateTime @default(now()) @map("issued_at")
+  issuedAt    DateTime @default(now()) @map("issued_at") @db.Timestamptz(3)
 
   booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
 
@@ -345,14 +369,16 @@ model Fine {
   reason     String   @db.VarChar(500)
   amount     Decimal  @db.Decimal(12, 2)
   paymentId  Int?     @unique @map("payment_id")
-  createdAt  DateTime @default(now()) @map("created_at")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  customer User?        @relation("FineCustomer", fields: [customerId], references: [id])
-  issuedBy User         @relation("FineIssuedBy", fields: [issuedById], references: [id])
-  booking  Booking?     @relation(fields: [bookingId], references: [id])
-  payment  Payment?     @relation(fields: [paymentId], references: [id])
+  customer User?      @relation("FineCustomer", fields: [customerId], references: [id])
+  issuedBy User       @relation("FineIssuedBy", fields: [issuedById], references: [id])
+  booking  Booking?   @relation(fields: [bookingId], references: [id])
+  payment  Payment?   @relation(fields: [paymentId], references: [id])
   slots    FineSlot[]
 
+  @@index([customerId])
+  @@index([bookingId])
   @@map("fines")
 }
 
@@ -384,10 +410,11 @@ model SlotInspection {
   serviceDate DateTime         @map("service_date") @db.Date
   result      InspectionResult
   inspectorId Int              @map("inspector_id")
-  createdAt   DateTime         @default(now()) @map("created_at")
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
 
-  slot    ParkingSlot @relation(fields: [slotId], references: [id])
-  booking Booking     @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  slot      ParkingSlot @relation(fields: [slotId], references: [id])
+  booking   Booking     @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+  inspector User        @relation(fields: [inspectorId], references: [id])
 
   @@index([slotId, serviceDate])
   @@map("slot_inspections")
@@ -410,8 +437,8 @@ model Notification {
   body      String           @db.Text
   // กันส่งซ้ำ เช่น "expiring:<bookingId>:<serviceDate>"
   dedupeKey String?          @unique @map("dedupe_key") @db.VarChar(150)
-  readAt    DateTime?        @map("read_at")
-  createdAt DateTime         @default(now()) @map("created_at")
+  readAt    DateTime?        @map("read_at") @db.Timestamptz(3)
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -423,7 +450,9 @@ model SystemSetting {
   key         String   @id @db.VarChar(100)
   value       String   @db.Text
   updatedById Int?     @map("updated_by_id")
-  updatedAt   DateTime @updatedAt @map("updated_at")
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+
+  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: SetNull)
 
   @@map("system_settings")
 }
@@ -435,7 +464,7 @@ model AuditLog {
   entity    String   @db.VarChar(100)
   entityId  String?  @map("entity_id") @db.VarChar(100)
   detail    Json?
-  createdAt DateTime @default(now()) @map("created_at")
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
 
   user User? @relation(fields: [userId], references: [id])
 
