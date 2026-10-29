@@ -255,3 +255,27 @@ describe('round schedule set by IT', () => {
     );
   });
 });
+
+describe('service dates across calendar edges', () => {
+  it('includes 29 February in a leap year', () => {
+    expect(
+      serviceDates({
+        startDate: '2028-02-28',
+        endDate: '2028-03-01',
+        startRound: 0,
+        roundCount: 1,
+      }),
+    ).toEqual(['2028-02-28', '2028-02-29', '2028-03-01']);
+  });
+
+  it('crosses the end of the year', () => {
+    expect(
+      serviceDates({
+        startDate: '2026-12-31',
+        endDate: '2027-01-01',
+        startRound: 0,
+        roundCount: 1,
+      }),
+    ).toEqual(['2026-12-31', '2027-01-01']);
+  });
+});

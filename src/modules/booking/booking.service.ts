@@ -42,10 +42,15 @@ import {
   RoundsService,
   type ScheduleResolver,
 } from '../rounds/rounds.service.js';
-import type { CreateBookingDto, PayDaysDto } from './dto/create-booking.dto.js';
+import type {
+  BookingScope,
+  CreateBookingDto,
+  ListBookingsQueryDto,
+  PayDaysDto,
+} from './dto/create-booking.dto.js';
 import type { QuoteBookingDto } from './dto/quote-booking.dto.js';
 import { SettingsService } from '../settings/settings.service.js';
-import { vatIncluded, type VatBreakdown } from '../payment/domain/vat.js';
+import { storedVat, type VatBreakdown } from '../payment/domain/vat.js';
 
 export type RoundsConfig = {
   roundHours: number;
@@ -152,11 +157,41 @@ type BookingRecord = Prisma.BookingGetPayload<{
 
 const MS_PER_MINUTE = 60 * 1000;
 const LIST_LIMIT = 100;
+// รายการจองทีละหน้า (โหลดต่อด้วย before)
+export const BOOKING_PAGE_SIZE = 50;
 const CUSTOMER_SEARCH_LIMIT = 20;
 export const CUSTOMER_TYPES: UserType[] = ['BUYER', 'GREEN_SHIRT'];
 
+function scopeWhere(
+  scope: BookingScope,
+  today: string,
+): Prisma.BookingWhereInput {
+  if (scope === 'PENDING') {
+    return {
+      OR: [
+        { status: 'PENDING_PAYMENT' },
+        { status: 'CONFIRMED', days: { some: { paidAt: null } } },
+      ],
+    };
+  }
+  if (scope === 'ACTIVE') {
+    return {
+      status: { in: ['PENDING_PAYMENT', 'CONFIRMED'] },
+      endDate: { gte: toDbDate(today) },
+    };
+  }
+  return {};
+}
+
 function sumAmounts(items: { amount: number }[]): number {
   return items.reduce((total, item) => total + item.amount, 0);
+}
+
+const SATANG_PER_BAHT = 100;
+
+// เทียบยอดเงินระดับสตางค์ (ทศนิยมของ number บวกกันแล้วอาจคลาดเล็กน้อย)
+function sameMoney(a: number, b: number): boolean {
+  return Math.round(a * SATANG_PER_BAHT) === Math.round(b * SATANG_PER_BAHT);
 }
 
 function toView(
@@ -213,7 +248,7 @@ function toView(
               receiptNo: payment.receipt.receiptNo,
               transactionNo: payment.transactionNo,
               amount: Number(payment.amount),
-              vat: vatIncluded(Number(payment.amount)),
+              vat: storedVat(payment.receipt),
               issuedAt: payment.receipt.issuedAt.toISOString(),
               dates: booking.days
                 .filter((day) => day.paymentId === payment.id)
@@ -374,6 +409,19 @@ export class BookingService {
       now,
     );
     await this.assertSlotsBookable(dto.slotIds, onBehalf);
+    // ยอดคำนวณที่ server เสมอ ค่าจาก client ใช้แค่ตรวจว่าตรงกับที่ผู้ใช้เห็น (ราคาอาจเปลี่ยนระหว่างดูหน้าทวน)
+    const total = sumAmounts(installments);
+    if (
+      dto.expectedTotal !== undefined &&
+      !sameMoney(total, dto.expectedTotal)
+    ) {
+      throw new ApiException(
+        HttpStatus.CONFLICT,
+        'PRICE_CHANGED',
+        'The price changed after the quote; review the new total',
+        [String(total)],
+      );
+    }
 
     const dailyAmount = dto.slotIds.length * dto.roundCount * price;
     const payNow = installments.find((item) => item.dueAt === null);
@@ -401,7 +449,7 @@ export class BookingService {
             startRound: dto.startRound,
             roundCount: dto.roundCount,
             pricePerSlotRound: price,
-            totalAmount: sumAmounts(installments),
+            totalAmount: total,
             slots: { create: dto.slotIds.map((slotId) => ({ slotId })) },
           },
         });
@@ -479,8 +527,16 @@ export class BookingService {
     }
     if (!hasPermission(user, 'BOOKING_CREATE_ON_BEHALF')) throw denied();
     const customer = await this.prisma.user.findFirst({
-      where: { id: customerId, isActive: true, type: { in: CUSTOMER_TYPES } },
+      where: { id: customerId, type: { in: CUSTOMER_TYPES } },
     });
+    // ปิดใช้งานแยกจากไม่พบ: ฝ่ายบริการลูกค้าต้องรู้ว่าต้องเปิดบัญชีก่อน ไม่ใช่ค้นใหม่
+    if (customer && !customer.isActive) {
+      throw new ApiException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        'CUSTOMER_INACTIVE',
+        'This customer account is disabled',
+      );
+    }
     if (!customer) {
       throw new ApiException(
         HttpStatus.UNPROCESSABLE_ENTITY,
@@ -540,31 +596,50 @@ export class BookingService {
   // ผู้ขอใช้บริการเห็นเฉพาะการจองของตนเอง พนักงานเห็นทั้งหมดและค้นหาได้
   async list(
     user: AuthUser,
-    search?: string,
+    query: ListBookingsQueryDto,
     now: Date = new Date(),
   ): Promise<BookingView[]> {
-    const keyword = search?.trim();
-    const where: Prisma.BookingWhereInput =
-      user.type !== 'EMPLOYEE'
-        ? { customerId: user.id }
-        : keyword
-          ? {
-              OR: [
-                { bookingNo: { contains: keyword, mode: 'insensitive' } },
-                {
-                  customer: {
-                    fullName: { contains: keyword, mode: 'insensitive' },
-                  },
+    const keyword = query.q?.trim();
+    const isStaff = user.type === 'EMPLOYEE';
+    const scope = query.scope ?? 'ALL';
+    // ค้นจากเลขที่การจองหรือรหัสช่อง; พนักงานค้นจากชื่อ/เบอร์ลูกค้าได้ด้วย
+    const search: Prisma.BookingWhereInput = keyword
+      ? {
+          OR: [
+            { bookingNo: { contains: keyword, mode: 'insensitive' } },
+            {
+              slots: {
+                some: {
+                  slot: { code: { contains: keyword, mode: 'insensitive' } },
                 },
-                { customer: { phone: { contains: keyword } } },
-              ],
-            }
-          : {};
+              },
+            },
+            ...(isStaff
+              ? [
+                  {
+                    customer: {
+                      fullName: { contains: keyword, mode: 'insensitive' },
+                    },
+                  } satisfies Prisma.BookingWhereInput,
+                  { customer: { phone: { contains: keyword } } },
+                ]
+              : []),
+          ],
+        }
+      : {};
+    const paged = scope === 'ALL';
     const bookings = await this.prisma.booking.findMany({
-      where,
+      where: {
+        AND: [
+          isStaff ? {} : { customerId: user.id },
+          search,
+          scopeWhere(scope, todayInBangkok(now)),
+          paged && query.before ? { id: { lt: query.before } } : {},
+        ],
+      },
       include: BOOKING_INCLUDE,
       orderBy: { id: 'desc' },
-      take: LIST_LIMIT,
+      take: paged ? BOOKING_PAGE_SIZE : undefined,
     });
     const scheduleFor = await this.rounds.resolver();
     return bookings.map((booking) => toView(booking, now, scheduleFor));
@@ -686,41 +761,48 @@ export class BookingService {
     dto: PayDaysDto,
     now: Date = new Date(),
   ): Promise<BookingView> {
-    const booking = await this.findAccessible(user, id);
+    // ตรวจสิทธิ์เข้าถึงการจองนี้ก่อน (ไม่ใช่ของตัวเอง = ไม่พบ)
+    await this.findAccessible(user, id);
     const wanted = new Set(dto.dates);
-    const days = booking.days.filter(
-      (day) => day.paidAt === null && wanted.has(fromDbDate(day.serviceDate)),
-    );
-    if (booking.status !== 'CONFIRMED' || days.length !== wanted.size) {
-      throw new ApiException(
-        HttpStatus.UNPROCESSABLE_ENTITY,
-        'BOOKING_DAYS_NOT_PAYABLE',
-        'These days cannot be paid: already paid, or the booking is not active',
-      );
-    }
-
-    // กดชำระวันเดิมซ้ำขณะ QR เดิมยังไม่หมดอายุ: ใช้ QR เดิม ไม่ออกใหม่ทุกครั้งที่กด
-    const reusable = booking.payments.find(
-      (payment) =>
-        payment.status === 'PENDING' &&
-        payment.expiresAt > now &&
-        sameDates(
-          booking.days
-            .filter((day) => day.paymentId === payment.id)
-            .map((day) => fromDbDate(day.serviceDate)),
-          dto.dates,
-        ),
-    );
-    if (reusable) return this.get(user, id, now);
-
     const { qrTtlMinutes } = await this.settings.current();
     await this.prisma.$transaction(async (tx) => {
-      // QR เดิมที่ค้างอยู่ใช้ไม่ได้อีก เพื่อไม่ให้วันเดียวกันถูกชำระสองครั้ง
-      const stale = await tx.payment.findMany({
-        where: { bookingId: id, status: 'PENDING' },
-        select: { id: true },
+      // ล็อกการจองนี้ไว้จนจบ transaction: กดชำระพร้อมกันหลายครั้ง (กดรัว / สองแท็บ / เน็ตช้าแล้วกดซ้ำ)
+      // เข้ามาทีละคำขอ คำขอหลังเห็น QR ที่คำขอแรกเพิ่งออกแล้วใช้ QR นั้น — ไม่เกิด QR หลายอันของวันเดียวกันที่จ่ายได้ทุกอัน
+      await tx.$queryRaw`SELECT id FROM bookings WHERE id = ${id} FOR UPDATE`;
+      const current = await tx.booking.findUniqueOrThrow({
+        where: { id },
+        select: {
+          status: true,
+          days: true,
+          payments: { where: { status: 'PENDING' } },
+        },
       });
-      const staleIds = stale.map((payment) => payment.id);
+      const days = current.days.filter(
+        (day) => day.paidAt === null && wanted.has(fromDbDate(day.serviceDate)),
+      );
+      if (current.status !== 'CONFIRMED' || days.length !== wanted.size) {
+        throw new ApiException(
+          HttpStatus.UNPROCESSABLE_ENTITY,
+          'BOOKING_DAYS_NOT_PAYABLE',
+          'These days cannot be paid: already paid, or the booking is not active',
+        );
+      }
+
+      // กดชำระวันเดิมซ้ำขณะ QR เดิมยังไม่หมดอายุ: ใช้ QR เดิม ไม่ออกใหม่ทุกครั้งที่กด
+      const reusable = current.payments.find(
+        (payment) =>
+          payment.expiresAt > now &&
+          sameDates(
+            current.days
+              .filter((day) => day.paymentId === payment.id)
+              .map((day) => fromDbDate(day.serviceDate)),
+            dto.dates,
+          ),
+      );
+      if (reusable) return;
+
+      // QR เดิมที่ค้างอยู่ใช้ไม่ได้อีก เพื่อไม่ให้วันเดียวกันถูกชำระสองครั้ง
+      const staleIds = current.payments.map((payment) => payment.id);
       await tx.bookingDay.updateMany({
         where: { paymentId: { in: staleIds }, paidAt: null },
         data: { paymentId: null },

@@ -59,6 +59,10 @@ export class AvailabilityQueryDto {
   skipDates?: string[];
 }
 
+// ชื่อที่มีแต่ช่องว่างถือเป็นชื่อว่าง (ตัดช่องว่างหัวท้ายก่อนตรวจ)
+const trimText = ({ value }: { value: unknown }) =>
+  typeof value === 'string' ? value.trim() : value;
+
 export class CreateLotDto {
   @ApiProperty({ example: 'C' })
   @Matches(CODE_PATTERN)
@@ -66,6 +70,7 @@ export class CreateLotDto {
   code: string;
 
   @ApiProperty({ example: 'ลานจอด C' })
+  @Transform(trimText)
   @IsString()
   @IsNotEmpty()
   @MaxLength(NAME_MAX_LENGTH)
@@ -75,6 +80,7 @@ export class CreateLotDto {
 export class UpdateLotDto {
   @ApiPropertyOptional()
   @IsOptional()
+  @Transform(trimText)
   @IsString()
   @IsNotEmpty()
   @MaxLength(NAME_MAX_LENGTH)

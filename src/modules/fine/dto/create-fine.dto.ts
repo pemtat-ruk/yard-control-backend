@@ -4,11 +4,14 @@ import {
   ArrayMinSize,
   ArrayUnique,
   IsArray,
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
   MaxLength,
+  Min,
 } from 'class-validator';
+import { Transform, Type } from 'class-transformer';
 
 const NOTE_MAX_LENGTH = 300;
 // การจองหนึ่งรายการมีช่องไม่เกินจำนวนนี้ในทางปฏิบัติ — กันรายการยาวผิดปกติ
@@ -36,4 +39,24 @@ export class CreateFineDto extends FineTargetDto {
   @IsString()
   @MaxLength(NOTE_MAX_LENGTH)
   note?: string;
+}
+
+// รายการค่าปรับทีละหน้า (โหลดต่อด้วย before); unpaid = เฉพาะที่ยังไม่ชำระ ครบทุกใบ ไม่ตัดหน้า (ใช้ปิดสิทธิ์จอง)
+export class ListFinesQueryDto {
+  @ApiPropertyOptional({
+    description: 'โหลดต่อ: เฉพาะค่าปรับที่ id น้อยกว่านี้',
+  })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  before?: number;
+
+  @ApiPropertyOptional({ description: 'true = เฉพาะที่ยังไม่ชำระ' })
+  @IsOptional()
+  @Transform(
+    ({ value }: { value: unknown }) => value === true || value === 'true',
+  )
+  @IsBoolean()
+  unpaid?: boolean;
 }

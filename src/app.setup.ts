@@ -32,7 +32,8 @@ export function configureApp(app: NestExpressApplication): void {
   app.enableCors({
     origin: env.webOrigins,
     credentials: true,
-    exposedHeaders: [REQUEST_ID_HEADER],
+    // Date: หน้าเว็บเทียบนาฬิกาเครื่องกับ server เพื่อนับถอยหลังให้ถูกแม้เครื่องตั้งเวลาผิด
+    exposedHeaders: [REQUEST_ID_HEADER, 'Date'],
   });
   app.useGlobalPipes(
     new ValidationPipe({

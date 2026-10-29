@@ -11,6 +11,19 @@ export type VatBreakdown = {
   vat: number;
 };
 
+// ภาษีที่บันทึกไว้ในใบเสร็จตอนออก (ใบที่ออกแล้วต้องไม่เปลี่ยนแม้อัตราภาษีเปลี่ยนภายหลัง)
+export function storedVat(receipt: {
+  vatRatePercent: { toString(): string };
+  amountBeforeVat: { toString(): string };
+  vatAmount: { toString(): string };
+}): VatBreakdown {
+  return {
+    ratePercent: Number(receipt.vatRatePercent),
+    beforeVat: Number(receipt.amountBeforeVat),
+    vat: Number(receipt.vatAmount),
+  };
+}
+
 // แยกภาษีออกจากยอดรวมภาษี: ภาษี = ยอด × อัตรา / (100 + อัตรา) ปัดเป็นสตางค์
 // มูลค่าก่อนภาษีคือส่วนที่เหลือ สองส่วนรวมกันเท่ายอดเดิมเสมอ (ไม่คลาดสตางค์จากการปัดสองครั้ง)
 export function vatIncluded(

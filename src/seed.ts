@@ -58,7 +58,6 @@ async function seed(prisma: PrismaClient): Promise<void> {
         create: {
           lotId: saved.id,
           code,
-          gridCol: position,
           baseStatus: RESERVED_POSITIONS.includes(position)
             ? 'RESERVED'
             : CLOSED_POSITIONS.includes(position)

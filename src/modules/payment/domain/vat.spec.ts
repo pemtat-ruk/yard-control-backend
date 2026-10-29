@@ -1,4 +1,17 @@
-import { vatIncluded } from './vat.js';
+import { storedVat, vatIncluded } from './vat.js';
+
+describe('VAT stored on an issued receipt', () => {
+  it('shows the amounts saved at issue time, not a recalculation at the current rate', () => {
+    // ใบที่ออกตอนภาษี 10% ต้องยังแสดง 10% แม้อัตราในโค้ดเป็น 7%
+    expect(
+      storedVat({
+        vatRatePercent: '10.00',
+        amountBeforeVat: '100.00',
+        vatAmount: '10.00',
+      }),
+    ).toEqual({ ratePercent: 10, beforeVat: 100, vat: 10 });
+  });
+});
 
 describe('VAT included in the price', () => {
   it('splits 107 baht into 100 before VAT and 7 VAT', () => {

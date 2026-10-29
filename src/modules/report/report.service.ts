@@ -66,6 +66,8 @@ export type BookingReportTotals = {
   paidAmount: number;
   // ยอดที่ยังต้องชำระของรายการที่ไม่ถูกยกเลิก
   outstandingAmount: number;
+  // ยอดรวมของรายการที่ถูกยกเลิก (Screen Design 8.1: การ์ด "ยกเลิกรายการ" แสดงทั้งจำนวนและยอด)
+  cancelledAmount: number;
 };
 
 export type BookingReport = {
@@ -158,6 +160,9 @@ function totalsOf(rows: BookingReportRow[]): BookingReportTotals {
     paidAmount: sum((row) => row.paidAmount),
     outstandingAmount: sum((row) =>
       row.state === 'CANCELLED' ? 0 : row.totalAmount - row.paidAmount,
+    ),
+    cancelledAmount: sum((row) =>
+      row.state === 'CANCELLED' ? row.totalAmount : 0,
     ),
   };
 }

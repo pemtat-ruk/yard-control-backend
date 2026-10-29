@@ -7,11 +7,16 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser, RequirePermission } from '../auth/auth.decorators.js';
 import type { AuthUser } from '../auth/auth.types.js';
-import { CreateFineDto, FineTargetDto } from './dto/create-fine.dto.js';
+import {
+  CreateFineDto,
+  FineTargetDto,
+  ListFinesQueryDto,
+} from './dto/create-fine.dto.js';
 import type { SlotsFine } from './domain/fine-amount.js';
 import { FineService, type FineView } from './fine.service.js';
 import { PublishesSlots } from '../events/publishes-slots.js';
@@ -54,7 +59,21 @@ export class FineController {
 
   @Get()
   @ApiOperation({ summary: 'รายการค่าปรับ: ของตนเอง หรือทั้งหมดสำหรับพนักงาน' })
-  list(@CurrentUser() user: AuthUser): Promise<FineView[]> {
-    return this.fineService.list(user);
+  list(
+    @CurrentUser() user: AuthUser,
+    @Query() query: ListFinesQueryDto,
+  ): Promise<FineView[]> {
+    return this.fineService.list(user, query);
+  }
+
+  @Get(':id')
+  @ApiOperation({
+    summary: 'ค่าปรับหนึ่งใบ (หน้าใบเสร็จ): ของตนเอง หรือทุกใบสำหรับพนักงาน',
+  })
+  get(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseIntPipe) id: number,
+  ): Promise<FineView> {
+    return this.fineService.get(user, id);
   }
 }

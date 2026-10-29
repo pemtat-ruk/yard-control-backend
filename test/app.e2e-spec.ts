@@ -130,6 +130,14 @@ describe('API (e2e)', () => {
     });
   });
 
+  it('rejects an unknown booking list scope before touching the database', async () => {
+    const response = await request(app.getHttpServer())
+      .get('/api/v1/bookings?scope=EVERYTHING')
+      .expect(401);
+    // ต้องเข้าสู่ระบบก่อนเสมอ: guard ตรวจก่อน validation ไม่เผยรูปแบบ query ให้คนที่ไม่ได้เข้าสู่ระบบ
+    expect(response.body.error.code).toBe('AUTH_REQUIRED');
+  });
+
   it('rejects a malformed body with VALIDATION_FAILED', async () => {
     const response = await request(app.getHttpServer())
       .post('/api/v1/bookings/quote')
@@ -168,6 +176,9 @@ describe('API (e2e)', () => {
       '/reports/dashboard',
       '/bookings/import/history',
       '/bookings/import/history/1',
+      '/bookings?scope=PENDING',
+      '/fines?unpaid=true',
+      '/fines/1',
     ]) {
       const response = await request(app.getHttpServer())
         .get(`/api/v1${path}`)

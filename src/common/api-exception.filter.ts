@@ -33,6 +33,21 @@ const PRISMA_ERRORS: Record<string, { status: number; error: ErrorDetail }> = {
   },
 };
 
+// body-parser ปฏิเสธ request ที่ใหญ่เกินเพดาน (เช่น ไฟล์นำเข้าขนาดใหญ่) — ความผิดของ request ไม่ใช่ของระบบ
+const PAYLOAD_TOO_LARGE: { status: number; error: ErrorDetail } = {
+  status: HttpStatus.PAYLOAD_TOO_LARGE,
+  error: { code: 'PAYLOAD_TOO_LARGE', message: 'Request body is too large' },
+};
+
+function isPayloadTooLarge(exception: unknown): boolean {
+  return (
+    typeof exception === 'object' &&
+    exception !== null &&
+    'type' in exception &&
+    exception.type === 'entity.too.large'
+  );
+}
+
 // แปลง error ทุกชนิดเป็นรูปแบบเดียว: { "error": { "code", "message", "details"?, "requestId" } }
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
@@ -69,6 +84,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
         },
       };
     }
+    if (isPayloadTooLarge(exception)) return PAYLOAD_TOO_LARGE;
     if (exception instanceof Prisma.PrismaClientKnownRequestError) {
       const known = PRISMA_ERRORS[exception.code];
       if (known) return known;
