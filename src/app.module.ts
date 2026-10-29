@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
-import { ThrottlerGuard, ThrottlerModule } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { AccountAwareThrottlerGuard } from './common/throttler.guard.js';
 import { LoggerModule } from 'nestjs-pino';
 import { httpLoggerOptions } from './common/http-logger.js';
 import { env } from './config/env.js';
@@ -46,6 +47,6 @@ import { PrismaModule } from './prisma/prisma.module.js';
     JobsModule,
     UsersModule,
   ],
-  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
+  providers: [{ provide: APP_GUARD, useClass: AccountAwareThrottlerGuard }],
 })
 export class AppModule {}
