@@ -6,6 +6,7 @@ import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { CrmClient } from '../crm/crm.client.js';
 import type { AuthUser } from './auth.types.js';
+import { afterFailedLogin, isLocked } from './domain/login-lockout.js';
 import { verifyPassword } from './domain/password.js';
 import {
   createSessionToken,
@@ -52,6 +53,16 @@ function invalidCredentials(): ApiException {
     HttpStatus.UNAUTHORIZED,
     'AUTH_INVALID_CREDENTIALS',
     'Invalid credentials',
+  );
+}
+
+// ใส่รหัสผิดติดกันหลายครั้ง: บอกเวลาที่ลองใหม่ได้ (details[0] เป็นเวลา ISO ให้หน้าเว็บแสดง)
+function accountLocked(until: Date | null): ApiException {
+  return new ApiException(
+    HttpStatus.LOCKED,
+    'AUTH_ACCOUNT_LOCKED',
+    'Too many wrong passwords; try again later',
+    until ? [until.toISOString()] : undefined,
   );
 }
 
@@ -110,11 +121,31 @@ export class AuthService {
       where: { employeeCode: dto.employeeCode.trim().toUpperCase() },
       include: WITH_PERMISSIONS,
     });
+    if (employee?.type !== 'EMPLOYEE') return null;
+    const now = new Date();
+    if (isLocked(employee, now)) throw accountLocked(employee.lockedUntil);
     // TODO: [ถาม ข้อ 3] ตอนนี้ตรวจกับรหัสผ่านที่เก็บใน YCS เอง รอคำตอบว่าต้องต่อ AD / HR หรือไม่
-    const matched =
-      employee?.type === 'EMPLOYEE' &&
-      verifyPassword(dto.password, employee.passwordHash);
-    return matched ? employee : null;
+    if (!verifyPassword(dto.password, employee.passwordHash)) {
+      const next = afterFailedLogin(employee, now);
+      await this.prisma.user.update({ where: { id: employee.id }, data: next });
+      if (next.lockedUntil) {
+        await this.audit.record({
+          userId: employee.id,
+          action: 'ACCOUNT_LOCKED',
+          entity: 'user',
+          entityId: employee.id,
+        });
+        throw accountLocked(next.lockedUntil);
+      }
+      return null;
+    }
+    if (employee.failedLogins > 0 || employee.lockedUntil) {
+      await this.prisma.user.update({
+        where: { id: employee.id },
+        data: { failedLogins: 0, lockedUntil: null },
+      });
+    }
+    return employee;
   }
 
   // Workflow ข้อ 1: ผู้ขอใช้บริการถูกตรวจกับ CRM ทุกครั้งที่เข้าสู่ระบบ

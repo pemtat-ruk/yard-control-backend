@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import { PrismaPg } from '@prisma/adapter-pg';
-import { PrismaClient } from '@prisma/client';
+import { Prisma, PrismaClient } from '@prisma/client';
 import { todayInBangkok, toDbDate } from './common/service-date.js';
 import { env } from './config/env.js';
 import { hashPassword } from './modules/auth/domain/password.js';
@@ -9,16 +9,10 @@ import {
   type Department,
   type Permission,
 } from './modules/auth/domain/permissions.js';
+import { REAL_LOTS, slotCodesOf } from './seed-lots.js';
 
 // ข้อมูลตั้งต้นสำหรับเครื่องพัฒนาและเซิร์ฟเวอร์ทดสอบ: npm run db:seed (รันซ้ำได้ ไม่สร้างซ้ำ ไม่เขียนทับของเดิม)
-const SLOTS_PER_LOT = 12;
-const LOTS = [
-  { code: 'A', name: 'ลานจอด A' },
-  { code: 'B', name: 'ลานจอด B' },
-];
-// ตำแหน่งช่อง (นับจาก 1) ที่ตั้งสถานะไว้ให้เห็นครบทุกสีบนผัง
-const RESERVED_POSITIONS = [6, 11];
-const CLOSED_POSITIONS = [9];
+// ลานจอดเป็นลานจริงของตลาด (seed-lots.ts) — ผังของลานตั้งใหม่ทุกครั้ง ส่วนสถานะช่องที่ฝ่าย IT ตั้งไว้ไม่เขียนทับ
 const DEMO_NAME_DIGITS = 4;
 
 // บัญชีทดสอบ: ตรงกับปุ่ม "เข้าสู่ระบบด่วน" ของ frontend (src/components/auth/dev-quick-login.tsx)
@@ -44,25 +38,21 @@ function permissionsOf(department: Department): Permission[] {
 async function seed(prisma: PrismaClient): Promise<void> {
   const passwordHash = hashPassword(DEMO_EMPLOYEE_PASSWORD);
 
-  for (const [lotIndex, lot] of LOTS.entries()) {
+  for (const [lotIndex, lot] of REAL_LOTS.entries()) {
+    const layout = lot.layout ?? Prisma.DbNull;
     const saved = await prisma.parkingLot.upsert({
       where: { code: lot.code },
-      update: {},
-      create: { ...lot, sortOrder: lotIndex },
+      update: { layout },
+      create: { code: lot.code, name: lot.name, sortOrder: lotIndex, layout },
     });
-    for (let position = 1; position <= SLOTS_PER_LOT; position++) {
-      const code = `${lot.code}${String(position).padStart(2, '0')}`;
+    for (const code of slotCodesOf(lot)) {
       await prisma.parkingSlot.upsert({
         where: { lotId_code: { lotId: saved.id, code } },
         update: {},
         create: {
           lotId: saved.id,
           code,
-          baseStatus: RESERVED_POSITIONS.includes(position)
-            ? 'RESERVED'
-            : CLOSED_POSITIONS.includes(position)
-              ? 'CLOSED'
-              : 'OPEN',
+          heldRounds: lot.held?.slots.includes(code) ? lot.held.rounds : [],
         },
       });
     }

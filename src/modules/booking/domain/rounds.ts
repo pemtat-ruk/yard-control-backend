@@ -5,7 +5,7 @@ import {
   diffDays,
 } from '../../../common/service-date.js';
 
-// ข้อ 3.2: รอบเริ่ม 07:00 แบ่งรอบละ 4 ชม. จองขั้นต่ำ 1 รอบ — ค่าตั้งต้น ฝ่าย IT ตั้งใหม่ได้แบบมีผลตั้งแต่วันที่ (round_configs)
+// ข้อ 3.2: รอบเริ่ม 07:01 (ชั่วโมงแรก 07) แบ่งรอบละ 4 ชม. จองขั้นต่ำ 1 รอบ — ค่าตั้งต้น ฝ่าย IT ตั้งใหม่ได้แบบมีผลตั้งแต่วันที่ (round_configs)
 // วันบริการหนึ่งวันใช้ตารางรอบเดียว เริ่มที่ firstHour ยาว 24 ชม.
 export type RoundSchedule = { firstHour: number; roundHours: number };
 export const DEFAULT_SCHEDULE: RoundSchedule = { firstHour: 7, roundHours: 4 };
@@ -37,7 +37,7 @@ export type BookingType = 'SHORT' | 'LONG';
 export type BookingRequest = {
   startDate: string; // วันบริการ (นับจาก 07:00 ถึง 07:00 วันถัดไป)
   endDate: string;
-  startRound: number; // 0 = 07:00, 1 = 11:00, ... 5 = 03:00
+  startRound: number; // 0 = 07:01, 1 = 11:01, ... 5 = 03:01
   roundCount: number;
   // วันในช่วงที่ไม่ต้องการจอง (จองข้ามวันในรายการเดียว) — ต้องอยู่ระหว่างวันแรกกับวันสุดท้ายเท่านั้น
   skipDates?: string[];
@@ -56,6 +56,19 @@ export type BookingRuleError =
 
 export type RoundKey = { serviceDate: string; roundIndex: number };
 
+// Requirement: แต่ละรอบเริ่มนาทีที่ 1 ของชั่วโมง (07:01–11:00) — นาทีรอยต่อ (11:00) ยังเป็นของรอบก่อน
+// ช่วงใช้งานจริงของทุกรอบจึงเลื่อนไป 1 นาทีเท่ากันหมด: [07:01, 11:01) ความยาวรอบและเลขรอบไม่เปลี่ยน
+export const ROUND_START_MINUTE = 1;
+const MS_PER_MINUTE = 60 * 1000;
+
+// เวลาเริ่มของรอบที่เริ่มชั่วโมง hour ของวันบริการ (เวลาไทย) = hh:01
+export function roundInstant(serviceDate: string, hour: number): Date {
+  return new Date(
+    bangkokInstant(serviceDate, hour).getTime() +
+      ROUND_START_MINUTE * MS_PER_MINUTE,
+  );
+}
+
 export function roundWindow(
   serviceDate: string,
   roundIndex: number,
@@ -63,8 +76,8 @@ export function roundWindow(
 ): { startsAt: Date; endsAt: Date } {
   const startHour = schedule.firstHour + roundIndex * schedule.roundHours;
   return {
-    startsAt: bangkokInstant(serviceDate, startHour),
-    endsAt: bangkokInstant(serviceDate, startHour + schedule.roundHours),
+    startsAt: roundInstant(serviceDate, startHour),
+    endsAt: roundInstant(serviceDate, startHour + schedule.roundHours),
   };
 }
 
@@ -77,8 +90,8 @@ export function usageWindow(
 ): { startsAt: Date; endsAt: Date } {
   const startHour = schedule.firstHour + startRound * schedule.roundHours;
   return {
-    startsAt: bangkokInstant(serviceDate, startHour),
-    endsAt: bangkokInstant(
+    startsAt: roundInstant(serviceDate, startHour),
+    endsAt: roundInstant(
       serviceDate,
       startHour + roundCount * schedule.roundHours,
     ),
@@ -105,10 +118,11 @@ export function roundLabel(
   roundIndex: number,
   schedule: RoundSchedule,
 ): string {
-  const fmt = (hour: number) =>
-    `${String(hour % HOURS_PER_DAY).padStart(2, '0')}:00`;
+  // ป้ายตาม Requirement: เริ่ม hh:01 จบ hh:00 ("07:01-11:00")
+  const fmt = (hour: number, minute: number) =>
+    `${String(hour % HOURS_PER_DAY).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
   const start = schedule.firstHour + roundIndex * schedule.roundHours;
-  return `${fmt(start)}-${fmt(start + schedule.roundHours)}`;
+  return `${fmt(start, ROUND_START_MINUTE)}-${fmt(start + schedule.roundHours, 0)}`;
 }
 
 export function listRounds(
@@ -228,7 +242,7 @@ function crossesScheduleChange(
     schedule,
   );
   return (
-    endsAt.getTime() > bangkokInstant(nextDay, nextSchedule.firstHour).getTime()
+    endsAt.getTime() > roundInstant(nextDay, nextSchedule.firstHour).getTime()
   );
 }
 

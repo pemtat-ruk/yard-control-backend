@@ -13,6 +13,11 @@ import {
 } from '../../common/service-date.js';
 import { env } from '../../config/env.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import {
+  SLOT_WITH_LOT,
+  sortedLabels,
+  type SlotWithLot,
+} from '../yard/domain/slot-label.js';
 import { continuesInNextRound } from '../booking/booking-continuation.js';
 import { bookedDatesWithin, usageWindow } from '../booking/domain/rounds.js';
 import { RoundsService } from '../rounds/rounds.service.js';
@@ -23,7 +28,7 @@ import { crossedRoundBoundary } from './round-boundary.js';
 type NotificationRow = Prisma.NotificationCreateManyInput;
 
 const USAGE_BOOKING_INCLUDE = {
-  slots: { include: { slot: { select: { code: true } } } },
+  slots: { include: { slot: { select: SLOT_WITH_LOT } } },
   days: { select: { serviceDate: true } },
 } satisfies Prisma.BookingInclude;
 
@@ -152,7 +157,7 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
         paymentPlan: 'DAILY',
         days: { some: { paidAt: null, dueAt: { lte: now } } },
       },
-      include: { slots: { include: { slot: { select: { code: true } } } } },
+      include: { slots: { include: { slot: { select: SLOT_WITH_LOT } } } },
     });
     const today = toDbDate(todayInBangkok(now));
     for (const booking of overdue) {
@@ -346,9 +351,9 @@ export class JobsService implements OnModuleInit, OnModuleDestroy {
 
   private describe(booking: {
     bookingNo: string;
-    slots: { slot: { code: string } }[];
+    slots: { slot: SlotWithLot }[];
   }): string {
-    const codes = booking.slots.map((item) => item.slot.code).sort();
+    const codes = sortedLabels(booking.slots.map((item) => item.slot));
     return `${booking.bookingNo} · ${codes.join(', ')}`;
   }
 }

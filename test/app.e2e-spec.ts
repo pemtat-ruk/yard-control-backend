@@ -105,7 +105,7 @@ describe('API (e2e)', () => {
     expect(response.body.data.rounds).toHaveLength(6);
     expect(response.body.data.rounds[0]).toEqual({
       index: 0,
-      label: '07:00-11:00',
+      label: '07:01-11:00',
     });
   });
 

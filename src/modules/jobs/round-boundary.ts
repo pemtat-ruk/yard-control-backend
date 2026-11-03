@@ -1,12 +1,18 @@
-import type { RoundSchedule } from '../booking/domain/rounds.js';
+import {
+  ROUND_START_MINUTE,
+  type RoundSchedule,
+} from '../booking/domain/rounds.js';
 
 const MS_PER_HOUR = 60 * 60 * 1000;
+const MS_PER_MINUTE = 60 * 1000;
 // เวลาไทย UTC+7 ไม่มีเวลาออมแสง
 const BANGKOK_OFFSET_MS = 7 * MS_PER_HOUR;
 
 // ลำดับที่ของรอบที่เวลานี้อยู่ (นับต่อเนื่องข้ามวัน) — รอบเริ่มที่ firstHour และทุก ๆ roundHours ตามเวลาไทย
+// รอบเริ่มนาทีที่ ROUND_START_MINUTE ของชั่วโมง (07:01) จึงลบออกก่อนนับ
 function roundIndexAt(at: Date, schedule: RoundSchedule): number {
-  const local = at.getTime() + BANGKOK_OFFSET_MS;
+  const local =
+    at.getTime() + BANGKOK_OFFSET_MS - ROUND_START_MINUTE * MS_PER_MINUTE;
   return Math.floor(
     (local - schedule.firstHour * MS_PER_HOUR) /
       (schedule.roundHours * MS_PER_HOUR),

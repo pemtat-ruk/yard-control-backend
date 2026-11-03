@@ -8,6 +8,11 @@ import {
   todayInBangkok,
 } from '../../common/service-date.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import {
+  parseSlotLabel,
+  SLOT_WITH_LOT,
+  sortedLabels,
+} from '../yard/domain/slot-label.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { hasPermission, type UserType } from '../auth/domain/permissions.js';
@@ -19,6 +24,7 @@ import {
 import { PaymentService } from '../payment/payment.service.js';
 import { PricingService } from '../pricing/pricing.service.js';
 import { isBookableBy, resolveStatus } from '../yard/domain/slot-status.js';
+import { heldDuring } from '../yard/domain/availability.js';
 import { continuesInNextRound } from './booking-continuation.js';
 import { bookingNoFor, tempBookingNo } from './booking-number.js';
 import {
@@ -143,9 +149,21 @@ export type CustomerView = {
   userType: UserType;
 };
 
+// คำค้นช่องจอด: รหัสเต็ม "P5-12" ค้นในลาน P5 เท่านั้น; คำค้นอื่นค้นรหัสช่องของทุกลาน
+function slotKeywordFilter(keyword: string): Prisma.ParkingSlotWhereInput {
+  const parsed = parseSlotLabel(keyword);
+  const code = {
+    contains: parsed?.code ?? keyword,
+    mode: 'insensitive' as const,
+  };
+  return parsed
+    ? { code, lot: { code: { equals: parsed.lot, mode: 'insensitive' } } }
+    : { code };
+}
+
 const BOOKING_INCLUDE = {
   customer: { select: { fullName: true } },
-  slots: { include: { slot: { select: { code: true } } } },
+  slots: { include: { slot: { select: SLOT_WITH_LOT } } },
   days: { orderBy: { serviceDate: 'asc' } },
   payments: { include: { receipt: true }, orderBy: { id: 'asc' } },
   tickets: { orderBy: { serviceDate: 'asc' } },
@@ -223,7 +241,7 @@ function toView(
       scheduleFor(fromDbDate(booking.startDate)),
     ),
     roundCount: booking.roundCount,
-    slots: booking.slots.map((item) => item.slot.code).sort(),
+    slots: sortedLabels(booking.slots.map((item) => item.slot)),
     totalAmount: Number(booking.totalAmount),
     paidAmount: sumAmounts(days.filter((day) => day.paid)),
     pendingPayment: pending
@@ -408,7 +426,7 @@ export class BookingService {
       },
       now,
     );
-    await this.assertSlotsBookable(dto.slotIds, onBehalf);
+    await this.assertSlotsBookable(dto.slotIds, onBehalf, dto, schedule);
     // ยอดคำนวณที่ server เสมอ ค่าจาก client ใช้แค่ตรวจว่าตรงกับที่ผู้ใช้เห็น (ราคาอาจเปลี่ยนระหว่างดูหน้าทวน)
     const total = sumAmounts(installments);
     if (
@@ -564,6 +582,8 @@ export class BookingService {
   private async assertSlotsBookable(
     slotIds: number[],
     onBehalf: boolean,
+    request: BookingRequest,
+    schedule: RoundSchedule,
   ): Promise<void> {
     const slots = await this.prisma.parkingSlot.findMany({
       where: { id: { in: slotIds }, deletedAt: null, lot: { deletedAt: null } },
@@ -580,6 +600,7 @@ export class BookingService {
             // การจองซ้อนตรวจด้วย unique ของฐานข้อมูลตอนบันทึก
             occupied: false,
             overtime: false,
+            held: heldDuring(slot.heldRounds, request, schedule),
           }),
           viewer,
         ),
@@ -602,17 +623,20 @@ export class BookingService {
     const keyword = query.q?.trim();
     const isStaff = user.type === 'EMPLOYEE';
     const scope = query.scope ?? 'ALL';
-    // ค้นจากเลขที่การจองหรือรหัสช่อง; พนักงานค้นจากชื่อ/เบอร์ลูกค้าได้ด้วย
+    // ค้นจากเลขที่การจอง เลขที่ตั๋ว (พิมพ์หรือยิงบาร์โค้ดที่ป้อม) หรือรหัสช่อง; พนักงานค้นจากชื่อ/เบอร์ลูกค้าได้ด้วย
     const search: Prisma.BookingWhereInput = keyword
       ? {
           OR: [
             { bookingNo: { contains: keyword, mode: 'insensitive' } },
             {
-              slots: {
+              tickets: {
                 some: {
-                  slot: { code: { contains: keyword, mode: 'insensitive' } },
+                  ticketNo: { contains: keyword, mode: 'insensitive' },
                 },
               },
+            },
+            {
+              slots: { some: { slot: slotKeywordFilter(keyword) } },
             },
             ...(isStaff
               ? [
@@ -687,7 +711,7 @@ export class BookingService {
         endDate: { gte: toDbDate(yesterday) },
       },
       include: {
-        slots: { include: { slot: { select: { code: true } } } },
+        slots: { include: { slot: { select: SLOT_WITH_LOT } } },
         days: { select: { serviceDate: true } },
       },
       orderBy: { startDate: 'asc' },
@@ -734,7 +758,7 @@ export class BookingService {
           bookingId: booking.id,
           bookingNo: booking.bookingNo,
           serviceDate,
-          slots: booking.slots.map((item) => item.slot.code).sort(),
+          slots: sortedLabels(booking.slots.map((item) => item.slot)),
           slotIds,
           startsAt: window.startsAt.toISOString(),
           endsAt: window.endsAt.toISOString(),

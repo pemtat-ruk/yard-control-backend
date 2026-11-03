@@ -16,17 +16,21 @@ import { CurrentUser, RequirePermission } from '../auth/auth.decorators.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import {
   AvailabilityQueryDto,
+  DayBoardQueryDto,
   CreateLotDto,
   CreateSlotDto,
   RecordInspectionDto,
   UpdateLotDto,
+  UpdateSlotHeldDto,
   UpdateSlotStatusDto,
 } from './dto/yard.dto.js';
 import {
   YardService,
   type AvailabilitySummary,
+  type DayBoard,
   type LayoutLot,
   type LiveYard,
+  type LotInfo,
   type SlotView,
 } from './yard.service.js';
 import { PublishesSlots } from '../events/publishes-slots.js';
@@ -55,6 +59,19 @@ export class YardController {
     @Query() query: AvailabilityQueryDto,
   ): Promise<AvailabilitySummary> {
     return this.yardService.getAvailabilitySummary(user, query);
+  }
+
+  @Get('day-board')
+  @RequirePermission('BOOKING_CREATE_ON_BEHALF', 'SLOT_INSPECT', 'REPORT_VIEW')
+  @ApiOperation({ summary: 'ตารางช่อง × รอบของวันเดียว: ใครใช้ช่องไหนรอบไหน' })
+  dayBoard(@Query() query: DayBoardQueryDto): Promise<DayBoard> {
+    return this.yardService.getDayBoard(query.date);
+  }
+
+  @Get('lots')
+  @ApiOperation({ summary: 'ลานจอดทั้งหมดพร้อมผังของลาน (แถว ทางรถ ป้าย)' })
+  lots(): Promise<LotInfo[]> {
+    return this.yardService.getLots();
   }
 
   @Get('live')
@@ -155,6 +172,19 @@ export class YardController {
     @Body() dto: UpdateSlotStatusDto,
   ): Promise<void> {
     return this.yardService.updateSlotStatus(user, id, dto);
+  }
+
+  @PublishesSlots()
+  @Patch('slots/:id/held')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequirePermission('LAYOUT_TOGGLE')
+  @ApiOperation({ summary: 'กันช่องบางรอบของทุกวัน (เช่น โลจิสติกส์)' })
+  updateSlotHeld(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateSlotHeldDto,
+  ): Promise<void> {
+    return this.yardService.updateSlotHeld(user, id, dto);
   }
 
   @PublishesSlots()

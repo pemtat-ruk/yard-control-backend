@@ -2,7 +2,6 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { ApiException } from '../../common/api-exception.js';
 import {
   addDays,
-  bangkokInstant,
   fromDbDate,
   toDbDate,
   todayInBangkok,
@@ -14,6 +13,7 @@ import {
   scheduleOn,
   usageWindow,
   type RoundSchedule,
+  roundInstant,
 } from '../booking/domain/rounds.js';
 import {
   checkRoundConfig,
@@ -185,7 +185,7 @@ export class RoundsService {
         },
       }),
     ]);
-    const newStart = bangkokInstant(dto.effectiveFrom, dto.firstHour).getTime();
+    const newStart = roundInstant(dto.effectiveFrom, dto.firstHour).getTime();
     const overlaps = before.some(({ booking }) => {
       const schedule = resolve(fromDbDate(booking.startDate));
       const { endsAt } = usageWindow(

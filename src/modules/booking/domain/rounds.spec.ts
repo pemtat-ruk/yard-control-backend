@@ -18,21 +18,22 @@ const S = DEFAULT_SCHEDULE;
 const everyDay = () => DEFAULT_SCHEDULE;
 
 describe('booking rounds', () => {
-  it('starts at 07:00 with 4-hour rounds', () => {
+  it('starts at 07:01 with 4-hour rounds (Requirement: hh:01–hh:00)', () => {
     expect(listRounds(S).map((round) => round.label)).toEqual([
-      '07:00-11:00',
-      '11:00-15:00',
-      '15:00-19:00',
-      '19:00-23:00',
-      '23:00-03:00',
-      '03:00-07:00',
+      '07:01-11:00',
+      '11:01-15:00',
+      '15:01-19:00',
+      '19:01-23:00',
+      '23:01-03:00',
+      '03:01-07:00',
     ]);
   });
 
   it('converts a round to Bangkok-time instants, crossing midnight', () => {
     const { startsAt, endsAt } = roundWindow('2026-09-01', 4, S);
-    expect(startsAt.toISOString()).toBe('2026-09-01T16:00:00.000Z');
-    expect(endsAt.toISOString()).toBe('2026-09-01T20:00:00.000Z');
+    // 23:01 – 03:01 (นาที 03:00 ยังเป็นของรอบนี้)
+    expect(startsAt.toISOString()).toBe('2026-09-01T16:01:00.000Z');
+    expect(endsAt.toISOString()).toBe('2026-09-01T20:01:00.000Z');
   });
 
   it('finds the round right after a usage window, rolling into the next service day', () => {
@@ -114,8 +115,8 @@ describe('booking rounds', () => {
 describe('usage window', () => {
   it('runs from the first booked round for the booked number of rounds', () => {
     const { startsAt, endsAt } = usageWindow('2026-09-01', 1, 2, S);
-    expect(startsAt.toISOString()).toBe('2026-09-01T04:00:00.000Z');
-    expect(endsAt.toISOString()).toBe('2026-09-01T12:00:00.000Z');
+    expect(startsAt.toISOString()).toBe('2026-09-01T04:01:00.000Z');
+    expect(endsAt.toISOString()).toBe('2026-09-01T12:01:00.000Z');
   });
 
   it('rejects a booking for today whose time has already ended', () => {
@@ -125,8 +126,9 @@ describe('usage window', () => {
       startRound: 0,
       roundCount: 1,
     };
-    const beforeEnd = new Date('2026-09-01T03:59:00Z');
-    const afterEnd = new Date('2026-09-01T04:00:00Z');
+    // รอบ 07:01–11:00: 11:00 น. ยังจองได้ 11:01 น. จบแล้ว
+    const beforeEnd = new Date('2026-09-01T04:00:00Z');
+    const afterEnd = new Date('2026-09-01T04:01:00Z');
     expect(
       validateBookingRequest(request, '2026-09-01', everyDay, beforeEnd),
     ).toEqual([]);
@@ -138,13 +140,16 @@ describe('usage window', () => {
 
 describe('first open round of today', () => {
   it('skips rounds that have already ended', () => {
-    // 14:00 ตามเวลาไทย: รอบ 07:00 จบแล้ว รอบ 11:00-15:00 ยังไม่จบ
+    // 14:00 ตามเวลาไทย: รอบ 07:01 จบแล้ว รอบ 11:01-15:00 ยังไม่จบ
     expect(
       firstOpenRound('2026-09-01', new Date('2026-09-01T07:00:00Z'), S),
     ).toBe(1);
-    // 15:00 พอดี: รอบ 11:00-15:00 จบแล้ว
+    // 15:00 ยังเป็นของรอบ 11:01-15:00; 15:01 จบแล้ว
     expect(
       firstOpenRound('2026-09-01', new Date('2026-09-01T08:00:00Z'), S),
+    ).toBe(1);
+    expect(
+      firstOpenRound('2026-09-01', new Date('2026-09-01T08:01:00Z'), S),
     ).toBe(2);
   });
 
@@ -208,10 +213,10 @@ describe('round schedule set by IT', () => {
 
   it('lists rounds from the configured start and length', () => {
     expect(listRounds(sixHours).map((round) => round.label)).toEqual([
-      '06:00-12:00',
-      '12:00-18:00',
-      '18:00-00:00',
-      '00:00-06:00',
+      '06:01-12:00',
+      '12:01-18:00',
+      '18:01-00:00',
+      '00:01-06:00',
     ]);
   });
 

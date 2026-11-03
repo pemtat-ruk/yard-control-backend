@@ -31,7 +31,7 @@ export class CreateBookingDto {
   @Matches(DATE_PATTERN)
   endDate: string;
 
-  @ApiProperty({ example: 0, description: '0 = 07:00, 1 = 11:00, ...' })
+  @ApiProperty({ example: 0, description: '0 = 07:01, 1 = 11:01, ...' })
   @IsInt()
   @Min(0)
   startRound: number;

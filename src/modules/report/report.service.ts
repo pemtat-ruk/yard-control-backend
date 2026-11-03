@@ -3,6 +3,7 @@ import type { Prisma } from '@prisma/client';
 import { ApiException } from '../../common/api-exception.js';
 import { fromDbDate, todayInBangkok } from '../../common/service-date.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import { sortedLabels } from '../yard/domain/slot-label.js';
 import {
   RoundsService,
   type ScheduleResolver,
@@ -53,6 +54,9 @@ export type BookingReportRow = {
   plan: PaymentPlan;
   source: BookingSource;
   state: PaymentState;
+  // ยกเลิกแล้ว: เหตุที่ระบบยกเลิก (ไม่ชำระ QR ตอนจอง / ไม่ชำระค่าบริการรายวัน) และเวลาที่ยกเลิก
+  cancelReason: string | null;
+  cancelledAt: string | null;
   totalAmount: number;
   paidAmount: number;
 };
@@ -127,7 +131,7 @@ function toRow(
     createdAt: booking.createdAt.toISOString(),
     customerName: booking.customer.fullName,
     customerType: booking.customer.type,
-    slots: booking.slots.map((item) => item.slot.code).sort(),
+    slots: sortedLabels(booking.slots.map((item) => item.slot)),
     startDate: fromDbDate(booking.startDate),
     endDate: fromDbDate(booking.endDate),
     roundLabel: roundLabel(
@@ -139,6 +143,8 @@ function toRow(
     plan: booking.paymentPlan,
     source: booking.source,
     state: paymentState(booking.status, unpaidDays),
+    cancelReason: booking.cancelReason,
+    cancelledAt: booking.cancelledAt?.toISOString() ?? null,
     totalAmount: Number(booking.totalAmount),
     paidAmount: booking.days
       .filter((day) => day.paidAt !== null)

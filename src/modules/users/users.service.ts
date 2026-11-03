@@ -8,6 +8,11 @@ import {
   grantablePermissions,
   planPermissionChange,
 } from './domain/permission-change.js';
+import { hashPassword } from '../auth/domain/password.js';
+import type {
+  CreateEmployeeDto,
+  SetEmployeeActiveDto,
+} from './dto/manage-employee.dto.js';
 import type { UpdatePermissionsDto } from './dto/update-permissions.dto.js';
 
 export type EmployeeView = {
@@ -62,6 +67,82 @@ export class UsersService {
       orderBy: [{ department: 'asc' }, { employeeCode: 'asc' }],
     });
     return users.map(toView);
+  }
+
+  // เพิ่มพนักงานใหม่ (ฝ่าย IT): ยังไม่มีสิทธิ์ใด ให้สิทธิ์ต่อที่หน้าเดียวกัน
+  async createEmployee(
+    actor: AuthUser,
+    dto: CreateEmployeeDto,
+  ): Promise<EmployeeView> {
+    const employeeCode = dto.employeeCode.trim().toUpperCase();
+    const taken = await this.prisma.user.findUnique({
+      where: { employeeCode },
+    });
+    if (taken) {
+      throw new ApiException(
+        HttpStatus.CONFLICT,
+        'EMPLOYEE_CODE_TAKEN',
+        'This employee code is already used',
+      );
+    }
+    const created = await this.prisma.user.create({
+      data: {
+        type: 'EMPLOYEE',
+        employeeCode,
+        fullName: dto.fullName.trim(),
+        department: dto.department,
+        passwordHash: hashPassword(dto.password),
+      },
+      include: WITH_PERMISSIONS,
+    });
+    await this.audit.record({
+      userId: actor.id,
+      action: 'EMPLOYEE_CREATE',
+      entity: 'user',
+      entityId: created.id,
+      detail: { employeeCode, department: dto.department },
+    });
+    return toView(created);
+  }
+
+  // ปิด/เปิดใช้งานพนักงาน: ปิดแล้ว session เดิมใช้ไม่ได้ทันที (ตรวจ isActive ทุกคำขอ) — ปิดบัญชีตัวเองไม่ได้
+  async setActive(
+    actor: AuthUser,
+    id: number,
+    dto: SetEmployeeActiveDto,
+  ): Promise<EmployeeView> {
+    if (id === actor.id && !dto.isActive) {
+      throw new ApiException(
+        HttpStatus.UNPROCESSABLE_ENTITY,
+        'CANNOT_DEACTIVATE_SELF',
+        'You cannot deactivate your own account',
+      );
+    }
+    const user = await this.prisma.user.findFirst({
+      where: { id, type: 'EMPLOYEE' },
+    });
+    if (!user) {
+      throw new ApiException(
+        HttpStatus.NOT_FOUND,
+        'RECORD_NOT_FOUND',
+        'Employee not found',
+      );
+    }
+    const updated = await this.prisma.user.update({
+      where: { id },
+      // เปิดใช้งานใหม่ = ปลดล็อกจากการใส่รหัสผิดด้วย
+      data: dto.isActive
+        ? { isActive: true, failedLogins: 0, lockedUntil: null }
+        : { isActive: false },
+      include: WITH_PERMISSIONS,
+    });
+    await this.audit.record({
+      userId: actor.id,
+      action: dto.isActive ? 'EMPLOYEE_ACTIVATE' : 'EMPLOYEE_DEACTIVATE',
+      entity: 'user',
+      entityId: id,
+    });
+    return toView(updated);
   }
 
   async updatePermissions(

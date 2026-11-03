@@ -8,10 +8,17 @@ import {
   todayInBangkok,
 } from '../../common/service-date.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import {
+  labelOf,
+  parseSlotLabel,
+  SLOT_WITH_LOT,
+  sortedLabels,
+} from '../yard/domain/slot-label.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { PricingService } from '../pricing/pricing.service.js';
 import { isBookableBy, resolveStatus } from '../yard/domain/slot-status.js';
+import { heldDuring } from '../yard/domain/availability.js';
 import { bookingNoFor, tempBookingNo } from './booking-number.js';
 import { CUSTOMER_TYPES } from './booking.service.js';
 import { parseImportFile, type ImportRow } from './domain/import-file.js';
@@ -233,7 +240,7 @@ export class BookingImportService {
       where: { bookingNo: { in: bookingNos } },
       include: {
         customer: { select: { fullName: true } },
-        slots: { select: { slot: { select: { code: true } } } },
+        slots: { select: { slot: { select: SLOT_WITH_LOT } } },
       },
       orderBy: { id: 'asc' },
     });
@@ -241,7 +248,7 @@ export class BookingImportService {
       id: booking.id,
       bookingNo: booking.bookingNo,
       customerName: booking.customer.fullName,
-      slots: booking.slots.map((item) => item.slot.code).sort(),
+      slots: sortedLabels(booking.slots.map((item) => item.slot)),
       startDate: fromDbDate(booking.startDate),
       endDate: fromDbDate(booking.endDate),
       status: booking.status,
@@ -275,8 +282,10 @@ export class BookingImportService {
       // เวลาเริ่มในไฟล์ → เลขรอบตามตารางรอบของวันเริ่ม (ตารางรอบเปลี่ยนได้แบบมีผลตั้งแต่วันที่)
       const shapeOk = row.errors.length === 0;
       const schedule = scheduleFor(row.startDate);
-      const startRound = listRounds(schedule).findIndex((round) =>
-        round.label.startsWith(row.startTime),
+      const startRound = listRounds(schedule).findIndex(
+        (round) =>
+          round.label.startsWith(row.startTime) ||
+          round.label.startsWith(row.startTime.replace(/:00$/, ':01')),
       );
       if (shapeOk && startRound < 0) errors.push('IMPORT_TIME_INVALID');
       const customer = customerOf(row, customers);
@@ -309,6 +318,15 @@ export class BookingImportService {
         }
         // วันแรกต้องชำระภายในเที่ยงคืนก่อนวันนั้น — วันนี้ผ่านเที่ยงคืนมาแล้ว
         if (row.startDate <= today) errors.push('IMPORT_START_NOT_FUTURE');
+        // ช่องที่กันไว้บางรอบ (เช่น โลจิสติกส์) จองทับรอบนั้นไม่ได้
+        if (
+          rowSlots.some(
+            (slot) => slot && heldDuring(slot.heldRounds, request, schedule),
+          ) &&
+          !errors.includes('BOOKING_SLOT_NOT_BOOKABLE')
+        ) {
+          errors.push('BOOKING_SLOT_NOT_BOOKABLE');
+        }
       }
       const dates = shapeOk ? serviceDates(request) : [];
       const price = shapeOk ? await this.pricing.priceFor(row.startDate) : 0;
@@ -408,20 +426,31 @@ export class BookingImportService {
     return byKey;
   }
 
+  // ช่องในไฟล์เป็นรหัสเต็ม "P5-12" (เลขช่องซ้ำกันข้ามลาน) — ไม่ระบุลานถือว่าไม่พบ
   private async findSlots(rows: ImportRow[]) {
-    const slots = await this.prisma.parkingSlot.findMany({
-      where: {
-        code: { in: [...new Set(rows.flatMap((row) => row.slotCodes))] },
-        deletedAt: null,
-        lot: { deletedAt: null },
-      },
-      include: { lot: { select: { isOpen: true } } },
-    });
+    const wanted = [...new Set(rows.flatMap((row) => row.slotCodes))]
+      .map(parseSlotLabel)
+      .filter((label) => label !== null);
+    const slots =
+      wanted.length === 0
+        ? []
+        : await this.prisma.parkingSlot.findMany({
+            where: {
+              OR: wanted.map((label) => ({
+                code: label.code,
+                lot: { code: label.lot },
+              })),
+              deletedAt: null,
+              lot: { deletedAt: null },
+            },
+            include: { lot: { select: { isOpen: true, code: true } } },
+          });
     return new Map(
       slots.map((slot) => [
-        slot.code,
+        labelOf(slot),
         {
           id: slot.id,
+          heldRounds: slot.heldRounds,
           // ฝ่ายบริการลูกค้าจองช่องสงวนสิทธิ์ให้ลูกค้าประจำได้ (ข้อ 5)
           bookable: isBookableBy(
             resolveStatus({

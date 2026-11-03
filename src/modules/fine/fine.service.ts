@@ -2,6 +2,11 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { ApiException } from '../../common/api-exception.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
+import {
+  labelOf,
+  SLOT_WITH_LOT,
+  sortedLabels,
+} from '../yard/domain/slot-label.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import type { UserType } from '../auth/domain/permissions.js';
@@ -35,8 +40,7 @@ const FINE_INCLUDE = {
   customer: { select: { fullName: true, type: true } },
   booking: { select: { bookingNo: true } },
   slots: {
-    select: { slot: { select: { code: true } } },
-    orderBy: { slot: { code: 'asc' } },
+    select: { slot: { select: SLOT_WITH_LOT } },
   },
   payment: {
     select: { status: true, transactionNo: true, receipt: true },
@@ -89,7 +93,7 @@ function toFineView(fine: FineRecord): FineView {
     id: fine.id,
     fineNo: fine.fineNo,
     customerName: fine.customer?.fullName ?? null,
-    slotCodes: fine.slots.map((item) => item.slot.code),
+    slotCodes: sortedLabels(fine.slots.map((item) => item.slot)),
     bookingNo: fine.booking?.bookingNo ?? null,
     reason: fine.reason,
     amount: Number(fine.amount),
@@ -192,14 +196,14 @@ export class FineService {
           slotId: { in: dto.slotIds },
           fine: { bookingId: booking.id, createdAt: { gte: overtimeStart } },
         },
-        select: { slot: { select: { code: true } } },
+        select: { slot: { select: SLOT_WITH_LOT } },
       });
       if (finedSlots.length > 0) {
         throw new ApiException(
           HttpStatus.CONFLICT,
           'FINE_ALREADY_ISSUED',
           'These slots were already fined for this overtime',
-          finedSlots.map((item) => item.slot.code),
+          finedSlots.map((item) => labelOf(item.slot)),
         );
       }
       const payment = await this.payments.createPending(

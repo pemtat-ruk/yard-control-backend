@@ -13,6 +13,7 @@ import { hasPermission } from '../auth/domain/permissions.js';
 import {
   bookedDatesWithin,
   expandRounds,
+  listRounds,
   MAX_ADVANCE_DAYS,
   roundsPerDay,
   usageWindow,
@@ -21,7 +22,14 @@ import {
   type RoundSchedule,
 } from '../booking/domain/rounds.js';
 import { RoundsService } from '../rounds/rounds.service.js';
-import { freeSlotCount, type Occupancy } from './domain/availability.js';
+import {
+  currentRoundIndex,
+  freeSlotCount,
+  heldDuring,
+  type Occupancy,
+} from './domain/availability.js';
+import { compareSlotLabels } from './domain/slot-label.js';
+import type { LotLayout } from './domain/lot-layout.js';
 import {
   isBookableBy,
   resolveStatus,
@@ -37,6 +45,7 @@ import type {
   CreateSlotDto,
   RecordInspectionDto,
   UpdateLotDto,
+  UpdateSlotHeldDto,
   UpdateSlotStatusDto,
 } from './dto/yard.dto.js';
 
@@ -71,12 +80,42 @@ export type AvailabilitySummary = {
 };
 export type LiveYard = { now: string; slots: LiveSlotView[] };
 
-export type LayoutLot = {
+export type LayoutLot = LotInfo & {
   id: number;
+  slots: {
+    id: number;
+    code: string;
+    baseStatus: SlotBaseStatus;
+    heldRounds: number[];
+  }[];
+};
+
+// ลานจอดสำหรับวาดผัง: ชื่อ และผังของลาน (null = เรียงช่องแถวละ 6 แบบตั้งต้น)
+export type LotInfo = {
   code: string;
   name: string;
   isOpen: boolean;
-  slots: { id: number; code: string; baseStatus: SlotBaseStatus }[];
+  layout: LotLayout | null;
+};
+
+// ตารางช่อง × รอบของวันเดียว (แบบไฟล์ Excel ที่ฝ่ายบริการลูกค้าใช้อยู่): ใครใช้ช่องไหนรอบไหน
+export type DayBoardCell = {
+  bookingId: number;
+  bookingNo: string;
+  customerName: string;
+  paid: boolean;
+} | null;
+export type DayBoard = {
+  date: string;
+  rounds: { index: number; label: string }[];
+  slots: {
+    id: number;
+    lot: string;
+    code: string;
+    baseStatus: SlotBaseStatus;
+    heldRounds: number[];
+    cells: DayBoardCell[]; // ตามลำดับรอบ
+  }[];
 };
 
 // การจองที่ถือช่องจอดอยู่ (รวมที่รอชำระเงิน)
@@ -99,16 +138,32 @@ export class YardService {
     private readonly rounds: RoundsService,
   ) {}
 
-  private findActiveSlots() {
-    return this.prisma.parkingSlot.findMany({
+  // เรียงตามลาน แล้วเลขช่องแบบตัวเลข (2 ก่อน 10) — ฐานข้อมูลเรียงรหัสแบบตัวอักษร จึงเรียงต่อในหน่วยความจำ
+  private async findActiveSlots() {
+    const slots = await this.prisma.parkingSlot.findMany({
       where: { deletedAt: null, lot: { deletedAt: null } },
       include: { lot: true },
-      orderBy: [
-        { lot: { sortOrder: 'asc' } },
-        { lotId: 'asc' },
-        { code: 'asc' },
-      ],
+      orderBy: [{ lot: { sortOrder: 'asc' } }, { lotId: 'asc' }],
     });
+    return slots.sort(
+      (a, b) =>
+        a.lot.sortOrder - b.lot.sortOrder ||
+        a.lotId - b.lotId ||
+        compareSlotLabels(a.code, b.code),
+    );
+  }
+
+  async getLots(): Promise<LotInfo[]> {
+    const lots = await this.prisma.parkingLot.findMany({
+      where: { deletedAt: null },
+      orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
+    });
+    return lots.map((lot) => ({
+      code: lot.code,
+      name: lot.name,
+      isOpen: lot.isOpen,
+      layout: (lot.layout as LotLayout | null) ?? null,
+    }));
   }
 
   // ช่องจอดทั้งหมดพร้อมสถานะ ณ ช่วงเวลาที่จะจอง (ทุกวันในช่วง ใช้ช่วงเวลาเดียวกับวันแรก)
@@ -143,6 +198,11 @@ export class YardService {
         lotOpen: slot.lot.isOpen,
         occupied: takenSlotIds.has(slot.id),
         overtime: false,
+        held: heldDuring(
+          slot.heldRounds,
+          request,
+          scheduleFor(request.startDate),
+        ),
       });
       return {
         id: slot.id,
@@ -152,6 +212,52 @@ export class YardService {
         bookable: isBookableBy(status, viewer),
       };
     });
+  }
+
+  async getDayBoard(date: string): Promise<DayBoard> {
+    const schedule = (await this.rounds.resolver())(date);
+    const rounds = listRounds(schedule);
+    const [slots, occupancies] = await Promise.all([
+      this.findActiveSlots(),
+      this.prisma.slotOccupancy.findMany({
+        where: { serviceDate: toDbDate(date) },
+        include: {
+          booking: {
+            select: {
+              id: true,
+              bookingNo: true,
+              status: true,
+              customer: { select: { fullName: true } },
+            },
+          },
+        },
+      }),
+    ]);
+    const cellAt = new Map(
+      occupancies.map((row) => [
+        `${row.slotId}:${row.roundIndex}`,
+        {
+          bookingId: row.booking.id,
+          bookingNo: row.booking.bookingNo,
+          customerName: row.booking.customer.fullName,
+          paid: row.booking.status !== 'PENDING_PAYMENT',
+        },
+      ]),
+    );
+    return {
+      date,
+      rounds,
+      slots: slots.map((slot) => ({
+        id: slot.id,
+        lot: slot.lot.code,
+        code: slot.code,
+        baseStatus: slot.lot.isOpen ? slot.baseStatus : 'CLOSED',
+        heldRounds: slot.heldRounds,
+        cells: rounds.map(
+          (round) => cellAt.get(`${slot.id}:${round.index}`) ?? null,
+        ),
+      })),
+    };
   }
 
   // สรุปความว่างของทุกรอบเริ่ม (ช่วงวันเดิม) และทุกวันที่จองล่วงหน้าได้ (รอบเดิม) — ดึง occupancy ครั้งเดียวแล้วนับในหน่วยความจำ
@@ -177,6 +283,7 @@ export class YardService {
         ),
       )
       .map((slot) => slot.id);
+    const heldOf = new Map(slots.map((slot) => [slot.id, slot.heldRounds]));
 
     const roundRequests = Array.from(
       { length: roundsPerDay(scheduleFor(request.startDate)) },
@@ -226,7 +333,15 @@ export class YardService {
     const count = (candidate: BookingRequest) =>
       isValid(candidate)
         ? freeSlotCount(
-            bookableIds,
+            // ช่องที่กันไว้บางรอบนับเฉพาะคำขอที่ไม่ทับรอบนั้น
+            bookableIds.filter(
+              (id) =>
+                !heldDuring(
+                  heldOf.get(id) ?? [],
+                  candidate,
+                  scheduleFor(candidate.startDate),
+                ),
+            ),
             occupancies,
             candidate,
             scheduleFor(candidate.startDate),
@@ -358,6 +473,7 @@ export class YardService {
 
     const canSeeUsage = viewer !== 'CUSTOMER';
     if (canSeeUsage) await this.attachFines(overtime);
+    const nowRound = currentRoundIndex(now, scheduleFor);
     return {
       now: now.toISOString(),
       slots: slots.map((slot) => {
@@ -366,6 +482,8 @@ export class YardService {
           lotOpen: slot.lot.isOpen,
           occupied: active.has(slot.id),
           overtime: overtime.has(slot.id),
+          // รอบนี้กันไว้ (เช่น โลจิสติกส์) — ถ้ามีรถจองอยู่จริงยังแสดงเป็นใช้งาน
+          held: !active.has(slot.id) && slot.heldRounds.includes(nowRound),
         });
         const usage = active.get(slot.id) ?? overtime.get(slot.id);
         return {
@@ -483,9 +601,7 @@ export class YardService {
   async getLayout(): Promise<LayoutLot[]> {
     const lots = await this.prisma.parkingLot.findMany({
       where: { deletedAt: null },
-      include: {
-        slots: { where: { deletedAt: null }, orderBy: { code: 'asc' } },
-      },
+      include: { slots: { where: { deletedAt: null } } },
       orderBy: [{ sortOrder: 'asc' }, { id: 'asc' }],
     });
     return lots.map((lot) => ({
@@ -493,11 +609,15 @@ export class YardService {
       code: lot.code,
       name: lot.name,
       isOpen: lot.isOpen,
-      slots: lot.slots.map((slot) => ({
-        id: slot.id,
-        code: slot.code,
-        baseStatus: slot.baseStatus,
-      })),
+      layout: (lot.layout as LotLayout | null) ?? null,
+      slots: lot.slots
+        .sort((a, b) => compareSlotLabels(a.code, b.code))
+        .map((slot) => ({
+          id: slot.id,
+          code: slot.code,
+          baseStatus: slot.baseStatus,
+          heldRounds: slot.heldRounds,
+        })),
     }));
   }
 
@@ -570,6 +690,19 @@ export class YardService {
       }),
     ]);
     await this.recordLayoutChange(user, 'SLOT_STATUS', 'parking_slot', id);
+  }
+
+  // กันช่องบางรอบของทุกวัน: การจองที่มีอยู่แล้วไม่ถูกยกเลิก มีผลกับการจองใหม่
+  async updateSlotHeld(
+    user: AuthUser,
+    id: number,
+    dto: UpdateSlotHeldDto,
+  ): Promise<void> {
+    await this.prisma.parkingSlot.update({
+      where: { id },
+      data: { heldRounds: [...new Set(dto.heldRounds)].sort((a, b) => a - b) },
+    });
+    await this.recordLayoutChange(user, 'SLOT_HELD', 'parking_slot', id);
   }
 
   async deleteSlot(user: AuthUser, id: number): Promise<void> {
