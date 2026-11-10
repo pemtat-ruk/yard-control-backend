@@ -2,57 +2,35 @@ import { HttpStatus, Injectable } from '@nestjs/common';
 import { ApiException } from '../../common/api-exception.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
+import { isEmployeeActive } from '../auth/auth.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
-import type { Department, Permission } from '../auth/domain/permissions.js';
-import {
-  grantablePermissions,
-  planPermissionChange,
-} from './domain/permission-change.js';
-import { hashPassword } from '../auth/domain/password.js';
-import type {
-  CreateEmployeeDto,
-  SetEmployeeActiveDto,
-} from './dto/manage-employee.dto.js';
-import type { UpdatePermissionsDto } from './dto/update-permissions.dto.js';
+import { isPermission, type Permission } from '../auth/domain/permissions.js';
+import { planRoleChange } from './domain/role-change.js';
+import type { UpdateRolesDto } from './dto/update-roles.dto.js';
+
+export type RoleView = {
+  id: number;
+  name: string;
+  description: string | null;
+  permissions: Permission[];
+};
 
 export type EmployeeView = {
-  id: number;
-  employeeCode: string | null;
+  id: string; // EmpCode
+  employeeCode: string;
   name: string;
-  department: Department | null;
-  isActive: boolean;
+  department: string | null; // ชื่อฝ่ายจากข้อมูลพนักงานของบริษัท
+  position: string | null;
+  isActive: boolean; // ยังทำงานอยู่ (EmpStatus)
+  roleIds: number[];
   permissions: Permission[];
-  // สิทธิ์ที่ให้คนนี้ได้ตามฝ่าย (หน้าจอแสดงเฉพาะสิทธิ์เหล่านี้)
-  grantable: Permission[];
 };
 
-const WITH_PERMISSIONS = { permissions: { select: { permission: true } } };
+const ROLE_WITH_PERMISSIONS = {
+  permissions: { include: { action: true } },
+} as const;
 
-type EmployeeRow = {
-  id: number;
-  employeeCode: string | null;
-  fullName: string;
-  department: Department | null;
-  isActive: boolean;
-  permissions: { permission: Permission }[];
-};
-
-function toView(user: EmployeeRow): EmployeeView {
-  return {
-    id: user.id,
-    employeeCode: user.employeeCode,
-    name: user.fullName,
-    department: user.department,
-    isActive: user.isActive,
-    permissions: user.permissions.map((item) => item.permission),
-    grantable: grantablePermissions({
-      type: 'EMPLOYEE',
-      department: user.department,
-    }),
-  };
-}
-
-// ข้อ 2: ให้/ถอนสิทธิ์รายบุคคล ("เฉพาะคนที่ได้รับสิทธิ์") ภายในฝ่ายที่ถือสิทธิ์นั้นได้
+// ข้อ 2: พนักงานมาจาก vwEmployee_List ของบริษัท — ระบบนี้กำหนดได้แค่กลุ่มสิทธิ์ (Accounts_Roles)
 @Injectable()
 export class UsersService {
   constructor(
@@ -60,149 +38,127 @@ export class UsersService {
     private readonly audit: AuditService,
   ) {}
 
-  async listEmployees(): Promise<EmployeeView[]> {
-    const users = await this.prisma.user.findMany({
-      where: { type: 'EMPLOYEE' },
-      include: WITH_PERMISSIONS,
-      orderBy: [{ department: 'asc' }, { employeeCode: 'asc' }],
+  async listRoles(): Promise<RoleView[]> {
+    const roles = await this.prisma.roles.findMany({
+      where: { isActive: true },
+      include: ROLE_WITH_PERMISSIONS,
+      orderBy: { roleId: 'asc' },
     });
-    return users.map(toView);
+    return roles.map((role) => ({
+      id: Number(role.roleId),
+      name: role.roleName,
+      description: role.roleDescription,
+      permissions: role.permissions
+        .map((item) => item.action.actionCode)
+        .filter(isPermission),
+    }));
   }
 
-  // เพิ่มพนักงานใหม่ (ฝ่าย IT): ยังไม่มีสิทธิ์ใด ให้สิทธิ์ต่อที่หน้าเดียวกัน
-  async createEmployee(
-    actor: AuthUser,
-    dto: CreateEmployeeDto,
-  ): Promise<EmployeeView> {
-    const employeeCode = dto.employeeCode.trim().toUpperCase();
-    const taken = await this.prisma.user.findUnique({
-      where: { employeeCode },
+  // พนักงานที่มีกลุ่มสิทธิ์อยู่แล้ว + ค้นพนักงานอื่นด้วยชื่อหรือรหัส (q) เพื่อกำหนดกลุ่มสิทธิ์ให้
+  async listEmployees(q?: string): Promise<EmployeeView[]> {
+    const search = q?.trim();
+    const accounts = await this.prisma.accounts_Roles.findMany({
+      include: { role: { include: ROLE_WITH_PERMISSIONS } },
     });
-    if (taken) {
-      throw new ApiException(
-        HttpStatus.CONFLICT,
-        'EMPLOYEE_CODE_TAKEN',
-        'This employee code is already used',
+    const withRoles = [...new Set(accounts.map((account) => account.empCode))];
+    const employees = await this.prisma.employeeView.findMany({
+      where: search
+        ? {
+            OR: [
+              { empName: { contains: search } },
+              { empCode: { contains: search } },
+            ],
+          }
+        : { empCode: { in: withRoles } },
+      orderBy: { empCode: 'asc' },
+      take: search ? 50 : undefined,
+    });
+    return employees.map((employee) => {
+      const mine = accounts.filter(
+        (account) => account.empCode === employee.empCode,
       );
-    }
-    const created = await this.prisma.user.create({
-      data: {
-        type: 'EMPLOYEE',
-        employeeCode,
-        fullName: dto.fullName.trim(),
-        department: dto.department,
-        passwordHash: hashPassword(dto.password),
-      },
-      include: WITH_PERMISSIONS,
+      const permissions = new Set<Permission>();
+      for (const account of mine) {
+        for (const item of account.role.permissions) {
+          if (isPermission(item.action.actionCode)) {
+            permissions.add(item.action.actionCode);
+          }
+        }
+      }
+      return {
+        id: employee.empCode,
+        employeeCode: employee.empCode,
+        name: employee.empName,
+        department: employee.deptName,
+        position: employee.empPosition,
+        isActive: isEmployeeActive(employee.empStatus),
+        roleIds: mine.map((account) => Number(account.roleId)),
+        permissions: [...permissions],
+      };
     });
-    await this.audit.record({
-      userId: actor.id,
-      action: 'EMPLOYEE_CREATE',
-      entity: 'user',
-      entityId: created.id,
-      detail: { employeeCode, department: dto.department },
-    });
-    return toView(created);
   }
 
-  // ปิด/เปิดใช้งานพนักงาน: ปิดแล้ว session เดิมใช้ไม่ได้ทันที (ตรวจ isActive ทุกคำขอ) — ปิดบัญชีตัวเองไม่ได้
-  async setActive(
+  async updateRoles(
     actor: AuthUser,
-    id: number,
-    dto: SetEmployeeActiveDto,
+    empCode: string,
+    dto: UpdateRolesDto,
   ): Promise<EmployeeView> {
-    if (id === actor.id && !dto.isActive) {
-      throw new ApiException(
-        HttpStatus.UNPROCESSABLE_ENTITY,
-        'CANNOT_DEACTIVATE_SELF',
-        'You cannot deactivate your own account',
-      );
-    }
-    const user = await this.prisma.user.findFirst({
-      where: { id, type: 'EMPLOYEE' },
+    const employee = await this.prisma.employeeView.findUnique({
+      where: { empCode },
     });
-    if (!user) {
+    if (!employee) {
       throw new ApiException(
         HttpStatus.NOT_FOUND,
         'RECORD_NOT_FOUND',
         'Employee not found',
       );
     }
-    const updated = await this.prisma.user.update({
-      where: { id },
-      // เปิดใช้งานใหม่ = ปลดล็อกจากการใส่รหัสผิดด้วย
-      data: dto.isActive
-        ? { isActive: true, failedLogins: 0, lockedUntil: null }
-        : { isActive: false },
-      include: WITH_PERMISSIONS,
-    });
-    await this.audit.record({
-      userId: actor.id,
-      action: dto.isActive ? 'EMPLOYEE_ACTIVATE' : 'EMPLOYEE_DEACTIVATE',
-      entity: 'user',
-      entityId: id,
-    });
-    return toView(updated);
-  }
-
-  async updatePermissions(
-    actor: AuthUser,
-    id: number,
-    dto: UpdatePermissionsDto,
-  ): Promise<EmployeeView> {
-    const user = await this.prisma.user.findFirst({
-      where: { id, type: 'EMPLOYEE' },
-      include: WITH_PERMISSIONS,
-    });
-    if (!user) {
-      throw new ApiException(
-        HttpStatus.NOT_FOUND,
-        'RECORD_NOT_FOUND',
-        'Employee not found',
-      );
-    }
-    const plan = planPermissionChange({
-      target: { id: user.id, type: 'EMPLOYEE', department: user.department },
-      actorId: actor.id,
-      current: user.permissions.map((item) => item.permission),
-      wanted: dto.permissions,
+    const [allRoles, current] = await Promise.all([
+      this.prisma.roles.findMany({ where: { isActive: true } }),
+      this.prisma.accounts_Roles.findMany({ where: { empCode } }),
+    ]);
+    const plan = planRoleChange({
+      targetCode: empCode,
+      actorCode: actor.id,
+      allRoles,
+      current: current.map((account) => account.roleId),
+      wanted: dto.roleIds.map((id) => BigInt(id)),
     });
     if (!plan.ok) {
       throw new ApiException(
         HttpStatus.UNPROCESSABLE_ENTITY,
         plan.error,
-        plan.error === 'PERMISSION_NOT_ALLOWED'
-          ? "A permission is outside this employee's department"
+        plan.error === 'ROLE_NOT_FOUND'
+          ? 'A role does not exist'
           : 'You cannot remove your own settings permission',
       );
     }
 
     await this.prisma.$transaction([
-      this.prisma.userPermission.deleteMany({
-        where: { userId: id, permission: { in: plan.revoke } },
+      this.prisma.accounts_Roles.deleteMany({
+        where: { empCode, roleId: { in: plan.revoke } },
       }),
-      this.prisma.userPermission.createMany({
-        data: plan.grant.map((permission) => ({
-          userId: id,
-          permission,
-          grantedById: actor.id,
+      this.prisma.accounts_Roles.createMany({
+        data: plan.grant.map((roleId) => ({
+          empCode,
+          roleId,
+          createdBy: actor.id,
         })),
       }),
     ]);
     if (plan.grant.length > 0 || plan.revoke.length > 0) {
       await this.audit.record({
-        userId: actor.id,
-        action: 'PERMISSION_UPDATE',
-        entity: 'user',
-        entityId: id,
-        detail: { grant: plan.grant, revoke: plan.revoke },
+        actor: actor.id,
+        action: 'ROLE_UPDATE',
+        entity: 'employee',
+        entityId: empCode,
+        detail: {
+          grant: plan.grant.map(Number),
+          revoke: plan.revoke.map(Number),
+        },
       });
     }
-
-    const updated = await this.prisma.user.findUniqueOrThrow({
-      where: { id },
-      include: WITH_PERMISSIONS,
-    });
-    return toView(updated);
+    const [view] = await this.listEmployees(empCode);
+    return view;
   }
 }

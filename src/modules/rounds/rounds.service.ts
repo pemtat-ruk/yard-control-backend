@@ -1,5 +1,6 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { ApiException } from '../../common/api-exception.js';
+import { nextDocumentNo } from '../../common/document-no.js';
 import {
   addDays,
   fromDbDate,
@@ -9,12 +10,9 @@ import {
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
-import {
-  scheduleOn,
-  usageWindow,
-  type RoundSchedule,
-  roundInstant,
-} from '../booking/domain/rounds.js';
+import { roundInstant, type RoundSchedule } from '../booking/domain/rounds.js';
+import { roundRows } from '../layout/domain/round-set.js';
+import { LayoutService } from '../layout/layout.service.js';
 import {
   checkRoundConfig,
   earliestEffectiveDate,
@@ -22,7 +20,7 @@ import {
 import type { CreateRoundConfigDto } from './dto/create-round-config.dto.js';
 
 export type RoundConfigView = {
-  id: number;
+  id: number; // RoundID ของรอบแรกในชุด
   effectiveFrom: string;
   firstHour: number;
   roundHours: number;
@@ -35,48 +33,45 @@ export type ScheduleResolver = (serviceDate: string) => RoundSchedule;
 // การจองหลายวันยาวเกินช่วงจองล่วงหน้าได้ จึงต้องดูจากข้อมูลจริง)
 export type RoundConfigList = { configs: RoundConfigView[]; earliest: string };
 
-// ตารางรอบของแต่ละวันบริการ (ข้อ 3.2) — ทุกส่วนที่คำนวณรอบโหลด resolver จากที่นี่
+const HOLDING = { bookingStatus: 'A' };
+
+// ตารางรอบของแต่ละวันบริการ (ข้อ 3.2) — เก็บใน BookingRound เป็นชุดตาม RoundNo
 @Injectable()
 export class RoundsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly audit: AuditService,
+    private readonly layout: LayoutService,
   ) {}
 
-  // ตารางมีไม่กี่แถว โหลดทั้งหมดครั้งเดียวต่อการทำงาน แล้วเลือกตามวันในหน่วยความจำ
   async resolver(): Promise<ScheduleResolver> {
-    const configs = (await this.list()).map((config) => ({
-      effectiveFrom: config.effectiveFrom,
-      firstHour: config.firstHour,
-      roundHours: config.roundHours,
-    }));
-    return (serviceDate) => scheduleOn(configs, serviceDate);
+    const catalog = await this.layout.catalog();
+    return (serviceDate) => catalog.scheduleFor(serviceDate);
   }
 
   async list(): Promise<RoundConfigView[]> {
-    const rows = await this.prisma.roundConfig.findMany({
-      orderBy: { effectiveFrom: 'desc' },
-    });
-    return rows.map((row) => ({
-      id: row.id,
-      effectiveFrom: fromDbDate(row.effectiveFrom),
-      firstHour: row.firstHour,
-      roundHours: row.roundHours,
-      createdAt: row.createdAt.toISOString(),
+    const catalog = await this.layout.catalog();
+    return [...catalog.roundSets].reverse().map((set) => ({
+      id: Number(set.roundIds[0]),
+      effectiveFrom: set.effectiveFrom,
+      firstHour: set.schedule.firstHour,
+      roundHours: set.schedule.roundHours,
+      createdAt: (set.createdAt ?? new Date(0)).toISOString(),
     }));
   }
 
   async listWithEarliest(now: Date = new Date()): Promise<RoundConfigList> {
     const [configs, last] = await Promise.all([
       this.list(),
-      this.prisma.slotOccupancy.findFirst({
-        orderBy: { serviceDate: 'desc' },
-        select: { serviceDate: true },
+      this.prisma.bookingDetail.findFirst({
+        where: { booking: HOLDING },
+        orderBy: { usageDate: 'desc' },
+        select: { usageDate: true },
       }),
     ]);
     const afterWindow = earliestEffectiveDate(todayInBangkok(now));
     const afterBookings = last
-      ? addDays(fromDbDate(last.serviceDate), 1)
+      ? addDays(fromDbDate(last.usageDate), 1)
       : afterWindow;
     return {
       configs,
@@ -84,6 +79,7 @@ export class RoundsService {
     };
   }
 
+  // ชุดรอบใหม่ (RoundNo ใหม่) มีผลตั้งแต่วันที่ — ชุดที่ตั้งไว้วันเดียวกันก่อนหน้าถูกปิดใช้งาน
   async create(
     user: AuthUser,
     dto: CreateRoundConfigDto,
@@ -98,25 +94,33 @@ export class RoundsService {
       );
     }
     await this.assertNoBookingAffected(dto, now);
-    const created = await this.prisma.roundConfig.upsert({
-      where: { effectiveFrom: toDbDate(dto.effectiveFrom) },
-      create: {
-        effectiveFrom: toDbDate(dto.effectiveFrom),
-        firstHour: dto.firstHour,
-        roundHours: dto.roundHours,
-        createdById: user.id,
-      },
-      update: {
-        firstHour: dto.firstHour,
-        roundHours: dto.roundHours,
-        createdById: user.id,
-      },
+    const effectiveDate = toDbDate(dto.effectiveFrom);
+    const roundNo = await this.prisma.$transaction(async (tx) => {
+      await tx.bookingRound.updateMany({
+        where: { effectiveDate, isActive: true },
+        data: { isActive: false },
+      });
+      const roundNo = await nextDocumentNo(tx, 'R', user.id, now);
+      await tx.bookingRound.createMany({
+        data: roundRows(dto).map((row) => ({
+          ...row,
+          roundNo,
+          effectiveDate,
+          createBy: user.id,
+        })),
+      });
+      await this.layout.applyChange(
+        tx,
+        { effectiveFrom: dto.effectiveFrom, roundNo },
+        user.id,
+      );
+      return roundNo;
     });
     await this.audit.record({
-      userId: user.id,
+      actor: user.id,
       action: 'ROUND_CONFIG_SET',
-      entity: 'round_config',
-      entityId: created.id,
+      entity: 'booking_round',
+      entityId: roundNo,
       detail: {
         effectiveFrom: dto.effectiveFrom,
         firstHour: dto.firstHour,
@@ -126,36 +130,49 @@ export class RoundsService {
     return this.listWithEarliest(now);
   }
 
-  // ยกเลิกตารางที่ยังไม่ถึงช่วงจองได้ (ยังไม่มีใครจองตามตารางนั้น)
+  // ยกเลิกชุดรอบที่ยังไม่ถึงช่วงจองได้ (ยังไม่มีใครจองตามชุดนั้น) — เวอร์ชันผังกลับไปใช้ชุดก่อนหน้า
   async remove(
     user: AuthUser,
     id: number,
     now: Date = new Date(),
   ): Promise<RoundConfigList> {
-    const config = await this.prisma.roundConfig.findUnique({ where: { id } });
-    if (!config) {
+    const first = await this.prisma.bookingRound.findUnique({
+      where: { roundId: BigInt(id) },
+    });
+    if (!first || !first.isActive) {
       throw new ApiException(
         HttpStatus.NOT_FOUND,
         'RECORD_NOT_FOUND',
         'Round schedule not found',
       );
     }
-    if (
-      fromDbDate(config.effectiveFrom) <
-      earliestEffectiveDate(todayInBangkok(now))
-    ) {
+    const effectiveFrom = fromDbDate(first.effectiveDate);
+    if (effectiveFrom < earliestEffectiveDate(todayInBangkok(now))) {
       throw new ApiException(
         HttpStatus.UNPROCESSABLE_ENTITY,
         'ROUND_EFFECTIVE_TOO_SOON',
         'This schedule is already open for booking',
       );
     }
-    await this.prisma.roundConfig.delete({ where: { id } });
+    await this.prisma.$transaction(async (tx) => {
+      await tx.bookingRound.updateMany({
+        where: { roundNo: first.roundNo },
+        data: { isActive: false },
+      });
+      const catalog = await this.layout.catalog(tx);
+      const previous = catalog.roundSetOn(addDays(effectiveFrom, -1));
+      if (previous) {
+        await tx.parkingLayoutVersion.updateMany({
+          where: { roundNo: first.roundNo },
+          data: { roundNo: previous.roundNo },
+        });
+      }
+    });
     await this.audit.record({
-      userId: user.id,
+      actor: user.id,
       action: 'ROUND_CONFIG_DELETE',
-      entity: 'round_config',
-      entityId: id,
+      entity: 'booking_round',
+      entityId: first.roundNo,
     });
     return this.listWithEarliest(now);
   }
@@ -170,31 +187,23 @@ export class RoundsService {
     const resolve = await this.resolver();
     const dayBefore = addDays(dto.effectiveFrom, -1);
     const [spilled, before] = await Promise.all([
-      this.prisma.slotOccupancy.count({
-        where: { serviceDate: { gte: toDbDate(dto.effectiveFrom) } },
-      }),
-      this.prisma.bookingDay.findMany({
+      this.prisma.bookingDetail.count({
         where: {
-          serviceDate: toDbDate(dayBefore),
-          booking: { status: { not: 'CANCELLED' } },
+          usageDate: { gte: toDbDate(dto.effectiveFrom) },
+          booking: HOLDING,
         },
-        select: {
-          booking: {
-            select: { startRound: true, roundCount: true, startDate: true },
-          },
-        },
+      }),
+      this.prisma.bookingDetail.findMany({
+        where: { usageDate: toDbDate(dayBefore), booking: HOLDING },
+        select: { round: { select: { roundSequence: true } } },
       }),
     ]);
+    const schedule = resolve(dayBefore);
     const newStart = roundInstant(dto.effectiveFrom, dto.firstHour).getTime();
-    const overlaps = before.some(({ booking }) => {
-      const schedule = resolve(fromDbDate(booking.startDate));
-      const { endsAt } = usageWindow(
-        dayBefore,
-        booking.startRound,
-        booking.roundCount,
-        schedule,
-      );
-      return endsAt.getTime() > newStart;
+    const overlaps = before.some(({ round }) => {
+      const endHour =
+        schedule.firstHour + round.roundSequence * schedule.roundHours;
+      return roundInstant(dayBefore, endHour).getTime() > newStart;
     });
     if (spilled > 0 || overlaps) {
       throw new ApiException(

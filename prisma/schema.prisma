@@ -1,481 +1,735 @@
 // Yard Control System (YCS) — ระบบลานจอดรถจัดเรียงสินค้า
-// อ้างอิง Requirement Sign-off S6-FM-03-01 Ver.01 (15 ก.ย. 2026)
+// ตารางและคอลัมน์ตาม Program Specification_YCS – Data Dictionary (2) ของ SA
+// ตารางที่ขึ้นต้นหมวดด้วย [เรา] = SA ยังไม่ได้ออกแบบ ใช้ของเราไปก่อน (docs/sa-schema-tasks.md)
+// เวลา (datetime) เก็บเป็น UTC; วันที่ (Date) เป็นวันตามเวลาไทย
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlserver"
 }
 
-// ───────────── ผู้ใช้งานและสิทธิ์ (ข้อ 1, 2) ─────────────
+// ───────────── ค่าคงที่ (Master data) ─────────────
 
-enum UserType {
-  EMPLOYEE // พนักงาน: login ด้วยรหัสพนักงาน + รหัสผ่าน
-  GREEN_SHIRT // แรงงานเสื้อเขียว: หมายเลขบัตรแรงงาน + เบอร์โทร
-  BUYER // ผู้ซื้อทั่วไป: เบอร์โทร
+model BookingType {
+  id            BigInt    @id @default(autoincrement()) @map("ID")
+  bookingType   String    @unique @map("BookingType") @db.Char(1) // S | L
+  bookingTypeTh String?   @map("BookingType_Th") @db.NVarChar(500)
+  bookingTypeEn String?   @map("BookingType_En") @db.NVarChar(500)
+  isActive      Boolean   @default(true) @map("Is_Active")
+  createdBy     String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate   DateTime? @default(now()) @map("CreatedDate") @db.DateTime
+
+  bookings BookingHeader[]
+
+  @@map("BookingType")
 }
 
-enum Department {
-  CUSTOMER_SERVICE // ฝ่ายบริการลูกค้า
-  IT // ฝ่าย IT
-  YARD_MANAGEMENT // ฝ่ายจัดพื้นที่
-  OTHER
+model PaymentType {
+  id            BigInt    @id @default(autoincrement()) @map("ID")
+  paymentType   String    @unique @map("PaymentType") @db.Char(1) // F | D
+  paymentTypeTh String?   @map("PaymentType_Th") @db.NVarChar(500)
+  paymentTypeEn String?   @map("PaymentType_En") @db.NVarChar(500)
+  isActive      Boolean   @default(true) @map("Is_Active")
+  createdBy     String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate   DateTime? @default(now()) @map("CreatedDate") @db.DateTime
+
+  bookings BookingHeader[]
+
+  @@map("PaymentType")
 }
 
-// สิทธิ์ให้เป็นรายบุคคล ("เฉพาะคนที่ได้รับสิทธิ์")
-enum Permission {
-  BOOKING_CREATE_SELF // จองด้วยตนเอง
-  BOOKING_CREATE_ON_BEHALF // ฝ่ายบริการลูกค้าจองแทน
-  BOOKING_IMPORT_LONG_TERM // นำเข้าข้อมูลจองระยะยาวของลูกค้าประจำ
-  LAYOUT_TOGGLE // เปิด/ปิด ช่องจอดหรือลานจอด
-  LAYOUT_EDIT // เพิ่ม/ลบ ช่องจอดและลานจอด
-  PRICING_MANAGE // กำหนดเวลาและราคาช่องจอด
-  SLOT_INSPECT // ตรวจสอบช่องจอด
-  REPORT_VIEW // รายงานและแดชบอร์ด (กำหนดสิทธิ์ภายหลัง)
-  SETTINGS_MANAGE // ตั้งค่าระบบ
+// รหัสเป็น nvarchar(30) ต่างจาก char(1) ในตารางที่อ้าง จึงไม่มี FK (docs/sa-schema-tasks.md)
+model PaymentStatus {
+  id              BigInt    @id @default(autoincrement()) @map("ID")
+  paymentStatus   String    @unique @map("PaymentStatus") @db.NVarChar(30) // W | P | O | C
+  paymentStatusTh String?   @map("PaymentStatus_Th") @db.NVarChar(500)
+  paymentStatusEn String?   @map("PaymentStatus_En") @db.NVarChar(500)
+  isActive        Boolean   @default(true) @map("Is_Active")
+  createBy        String?   @map("CreateBy") @db.NVarChar(30)
+  createDate      DateTime? @default(now()) @map("CreateDate") @db.DateTime
+
+  @@map("PaymentStatus")
 }
 
-model User {
-  id           Int         @id @default(autoincrement())
-  type         UserType
-  department   Department?
-  employeeCode String?     @unique @map("employee_code") @db.VarChar(50)
-  passwordHash String?     @map("password_hash") @db.VarChar(512)
-  phone        String?     @unique @db.VarChar(20)
-  laborCardNo  String?     @unique @map("labor_card_no") @db.VarChar(50)
-  crmId        String?     @unique @map("crm_id") @db.VarChar(100) // ผู้ขอใช้บริการต้องมีข้อมูลใน CRM ก่อน
-  fullName     String      @map("full_name") @db.VarChar(255)
-  isActive     Boolean     @default(true) @map("is_active")
-  // พนักงานใส่รหัสผ่านผิดติดกันครบจำนวนที่กำหนด = ล็อกชั่วคราวถึงเวลานี้ (กันการเดารหัส); เข้าสำเร็จแล้วนับใหม่
-  failedLogins Int         @default(0) @map("failed_logins")
-  lockedUntil  DateTime?   @map("locked_until") @db.Timestamptz(3)
-  createdAt    DateTime    @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt    DateTime    @updatedAt @map("updated_at") @db.Timestamptz(3)
+model BookingStatus {
+  id            BigInt    @id @default(autoincrement()) @map("ID")
+  bookingStatus String    @unique @map("BookingStatus") @db.Char(1) // A | C
+  bookingTh     String?   @map("Booking_Th") @db.NVarChar(500)
+  bookingEn     String?   @map("Booking_En") @db.NVarChar(500)
+  isActive      Boolean   @default(true) @map("Is_Active")
+  createBy      String?   @map("CreateBy") @db.NVarChar(30)
+  createDate    DateTime? @default(now()) @map("CreateDate") @db.DateTime
 
-  permissions        UserPermission[] @relation("PermissionHolder")
-  // สิ่งที่ผู้ใช้คนนี้ทำไว้ (FK ของผู้ทำรายการ)
-  permissionsGranted UserPermission[] @relation("PermissionGrantedBy")
-  slotStatusChanges  SlotStatusLog[]
-  roundConfigs       RoundConfig[]
-  rateConfigs        RateConfig[]
-  inspections        SlotInspection[]
-  settingsUpdated    SystemSetting[]
-  bookings           Booking[]        @relation("BookingCustomer")
-  bookingsMade       Booking[]        @relation("BookingCreatedBy")
-  finesIssued        Fine[]           @relation("FineIssuedBy")
-  finesReceived      Fine[]           @relation("FineCustomer")
-  notifications      Notification[]
-  auditLogs          AuditLog[]
+  bookings BookingHeader[]
 
-  @@map("users")
+  @@map("BookingStatus")
 }
 
-model UserPermission {
-  userId      Int        @map("user_id")
-  permission  Permission
-  grantedById Int?       @map("granted_by_id")
-  grantedAt   DateTime   @default(now()) @map("granted_at") @db.Timestamptz(3)
+model ColorsStatus {
+  id            BigInt    @id @default(autoincrement()) @map("ID")
+  colorCode     String    @unique @map("ColorCode") @db.Char(1) // G | R | B | Y | S
+  colorTh       String?   @map("Color_Th") @db.NVarChar(500)
+  colorEn       String?   @map("Color_En") @db.NVarChar(500)
+  description   String?   @map("Description") @db.NVarChar(500)
+  htmlColorCode String?   @map("HtmlColorCode") @db.NVarChar(500)
+  isActive      Boolean   @default(true) @map("Is_Active")
+  createBy      String?   @map("CreateBy") @db.NVarChar(30)
+  createDate    DateTime? @default(now()) @map("CreateDate") @db.DateTime
 
-  user      User  @relation("PermissionHolder", fields: [userId], references: [id], onDelete: Cascade)
-  grantedBy User? @relation("PermissionGrantedBy", fields: [grantedById], references: [id], onDelete: SetNull)
-
-  @@id([userId, permission])
-  @@map("user_permissions")
+  @@map("ColorsStatus")
 }
 
-// ───────────── ผังลานจอด (ข้อ 5) ─────────────
+// ───────────── ผู้ใช้และสิทธิ์ ─────────────
 
-// สถานะที่เก็บจริงมีแค่ที่ตั้งค่าด้วยมือ; OCCUPIED / OVERTIME คำนวณจากการจอง ณ เวลานั้น
-enum SlotBaseStatus {
-  OPEN
-  RESERVED // จัดสรร/สงวนสิทธิ์ให้ลูกค้าประจำ
-  CLOSED
+// ข้อมูลพนักงานของบริษัท — บน server จริงเป็น view ของบริษัท; เครื่อง dev สร้างเป็นตารางจำลองชื่อเดียวกัน
+model EmployeeView {
+  empCode     String  @id @map("EmpCode") @db.NVarChar(30)
+  username    String  @unique @map("Username") @db.NVarChar(100)
+  password    String? @map("Password") @db.NVarChar(512)
+  empName     String  @map("EmpName") @db.NVarChar(255)
+  deptCode    String? @map("DeptCode") @db.NVarChar(50)
+  deptName    String? @map("DeptName") @db.NVarChar(255)
+  supDeptName String? @map("SupDeptName") @db.NVarChar(255)
+  empPosition String? @map("EmpPosition") @db.NVarChar(255)
+  empEmail    String? @map("EmpEmail") @db.NVarChar(255)
+  shortName   String? @map("ShortName") @db.NVarChar(100)
+  empStatus   String? @map("EmpStatus") @db.NVarChar(30)
+  userLevel   Int?    @map("User_Level")
+
+  @@map("vwEmployee_List")
 }
 
-model ParkingLot {
-  id        Int       @id @default(autoincrement())
-  code      String    @unique @db.VarChar(20)
-  name      String    @db.VarChar(255)
-  isOpen    Boolean   @default(true) @map("is_open")
-  sortOrder Int       @default(0) @map("sort_order")
-  // ผังของลาน: แถวของช่อง ทางรถ และป้ายสิ่งที่ไม่ใช่ช่อง (ถนน ซุ้ม) — null = เรียงช่องแถวละ 6 แบบตั้งต้น
-  layout    Json?
-  deletedAt DateTime? @map("deleted_at") @db.Timestamptz(3)
-  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt DateTime  @updatedAt @map("updated_at") @db.Timestamptz(3)
+model Roles {
+  roleId          BigInt    @id @default(autoincrement()) @map("RoleID")
+  roleName        String    @map("RoleName") @db.NVarChar(500)
+  roleDescription String?   @map("RoleDescription") @db.NVarChar(500)
+  isActive        Boolean   @default(true) @map("Is_Active")
+  createdBy       String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate     DateTime? @default(now()) @map("CreatedDate") @db.DateTime
 
-  slots ParkingSlot[]
-  rates RateConfig[]
+  permissions Role_Permission_Matrix[]
+  accounts    Accounts_Roles[]
 
-  @@map("parking_lots")
+  @@map("Roles")
+}
+
+// ค่าตอนนี้ยังเป็นสิทธิ์รายฟังก์ชันของระบบ (auth/domain/permissions.ts) — รหัสตามเมนูของ SA (can_view_...) รอย้ายทีหลัง
+// Description / SequenceNo / MenuID / MenuSubID ตาม Data Dictionary (พ.ย. 2569)
+model Permission_Actions {
+  actionId    BigInt    @id @default(autoincrement()) @map("ActionID")
+  actionCode  String    @unique @map("ActionCode") @db.VarChar(50)
+  actionName  String?   @map("ActionName") @db.NVarChar(500)
+  description String?   @map("Description") @db.NVarChar(500)
+  sequenceNo  Int?      @map("SequenceNo")
+  menuId      BigInt?   @map("MenuID")
+  menuSubId   BigInt?   @map("MenuSubID")
+  isActive    Boolean   @default(true) @map("Is_Active")
+  createdBy   String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate DateTime? @default(now()) @map("CreatedDate") @db.DateTime
+
+  roles Role_Permission_Matrix[]
+
+  @@map("Permission_Actions")
+}
+
+model Role_Permission_Matrix {
+  id          BigInt    @id @default(autoincrement()) @map("ID")
+  roleId      BigInt    @map("RoleID")
+  menuId      BigInt?   @map("MenuID") // ตาม Data Dictionary — ยังไม่ใช้ตรวจสิทธิ์
+  menuSubId   BigInt?   @map("MenuSubID")
+  actionId    BigInt    @map("ActionID")
+  createdBy   String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate DateTime? @default(now()) @map("CreatedDate") @db.DateTime
+
+  role   Roles              @relation(fields: [roleId], references: [roleId], onDelete: NoAction, onUpdate: NoAction)
+  action Permission_Actions @relation(fields: [actionId], references: [actionId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([roleId, actionId])
+  @@map("Role_Permission_Matrix")
+}
+
+// กลุ่มสิทธิ์ของพนักงาน (เอกสารเขียนว่า RoleID อ้าง Permission_Actions น่าจะพิมพ์ผิด จึงอ้าง Roles)
+model Accounts_Roles {
+  id          BigInt    @id @default(autoincrement()) @map("ID")
+  empCode     String    @map("EmpCode") @db.NVarChar(100)
+  roleId      BigInt    @map("RoleID")
+  createdBy   String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate DateTime? @default(now()) @map("CreatedDate") @db.DateTime
+
+  role Roles @relation(fields: [roleId], references: [roleId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@unique([empCode, roleId])
+  @@map("Accounts_Roles")
+}
+
+// [เรา] ใส่รหัสผ่านผิดติดกันครบจำนวน = ล็อกชั่วคราวถึง LockedUntil; เข้าสำเร็จแล้วนับใหม่
+model LoginAttempt {
+  loginKey     String    @id @map("LoginKey") @db.NVarChar(100)
+  failedLogins Int       @default(0) @map("FailedLogins")
+  lockedUntil  DateTime? @map("LockedUntil")
+
+  @@map("LoginAttempt")
+}
+
+model Menu_Groups {
+  menuId      BigInt    @id @default(autoincrement()) @map("MenuID")
+  menuNameTh  String?   @map("Menu_Name_Th") @db.NVarChar(500)
+  menuNameEn  String?   @map("Menu_Name_En") @db.NVarChar(500)
+  routePath   String?   @map("Route_Path") @db.NVarChar(500)
+  icon        String?   @map("Icon") @db.NVarChar(30)
+  sequenceNo  Int?      @map("SequenceNo")
+  isActive    Boolean   @default(true) @map("Is_Active")
+  createdBy   String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate DateTime? @default(now()) @map("CreatedDate") @db.DateTime
+
+  subGroups Menu_Sub_Groups[]
+
+  @@map("Menu_Groups")
+}
+
+model Menu_Sub_Groups {
+  menuSubId     BigInt    @id @default(autoincrement()) @map("MenuSubID")
+  menuSubNameTh String?   @map("Menu_Sub_Name_Th") @db.NVarChar(500)
+  menuSubNameEn String?   @map("Menu_Sub_Name_En") @db.VarChar(500)
+  routePath     String?   @map("Route_Path") @db.VarChar(500)
+  icon          String?   @map("Icon") @db.NVarChar(30)
+  sequenceNo    Int?      @map("SequenceNo")
+  isActive      Boolean   @default(true) @map("Is_Active")
+  menuId        BigInt    @map("MenuID")
+  createdBy     String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate   DateTime? @default(now()) @map("CreatedDate") @db.DateTime
+  updatedBy     String?   @map("UpdatedBy") @db.NVarChar(30)
+  updatedDate   DateTime? @map("UpdatedDate") @db.DateTime
+
+  menu Menu_Groups @relation(fields: [menuId], references: [menuId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("Menu_Sub_Groups")
+}
+
+// ผู้ขอใช้บริการ: แรงงาน (Labor) และผู้ซื้อ (buyer) — ข้อมูลส่วนใหญ่มาจาก CRM DB
+// เอกสารทำเครื่องหมาย PK ไว้ 3 คอลัมน์: ใช้ ID เป็น PK, CusId / LaborCode / Telephone เป็น unique
+model CRMCustomer {
+  id                      BigInt    @id @default(autoincrement()) @map("ID")
+  cusId                   String    @unique @map("CusId") @db.NVarChar(6) // C00001
+  cusType                 String?   @map("CusType") @db.NVarChar(100) // Labor | buyer
+  laborCode               String?   @unique @map("LaborCode") @db.VarChar(20)
+  laborCoat               String?   @map("LaborCoat") @db.VarChar(10)
+  laborOrigin             String?   @map("LaborOrigin") @db.VarChar(20)
+  laborCountry            String?   @map("LaborCountry") @db.VarChar(20)
+  laborColor              String?   @map("LaborColor") @db.VarChar(20)
+  laborStatus             String?   @map("LaborStatus") @db.VarChar(20)
+  coatNo                  Int?      @map("CoatNo")
+  telephone               String?   @unique @map("Telephone") @db.NVarChar(200)
+  firstName               String?   @map("FirstName") @db.NVarChar(200)
+  lastName                String?   @map("LastName") @db.NVarChar(200)
+  buyerType               String?   @map("BuyerType") @db.NVarChar(100)
+  buyerNumberPlate        String?   @map("BuyerNumberPlate") @db.NVarChar(50)
+  buyerProvinceToSell     String?   @map("BuyerProvinceToSell") @db.NVarChar(200)
+  buyerProvinceCar        String?   @map("BuyerProvinceCar") @db.NVarChar(100)
+  buyerInterestedProducts String?   @map("BuyerInterestedProducts") @db.NVarChar(300)
+  isActive                Boolean   @default(true) @map("Is_Active")
+  createdBy               String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate             DateTime? @default(now()) @map("CreatedDate") @db.DateTime
+  updatedBy               String?   @map("UpdatedBy") @db.NVarChar(30)
+  updatedDate             DateTime? @map("UpdatedDate") @db.DateTime
+
+  bookings BookingHeader[]
+
+  @@map("CRMCustomer")
+}
+
+// ───────────── ลานจอด ช่องจอด รอบ ราคา ─────────────
+
+model Parking {
+  parkingId   BigInt    @id @default(autoincrement()) @map("ParkingID")
+  parkingName String    @map("ParkingName") @db.NVarChar(500)
+  isActive    Boolean   @default(true) @map("Is_Active") // เปิด/ปิดลาน
+  createdBy   String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate DateTime? @default(now()) @map("CreatedDate") @db.DateTime
+
+  extra    ParkingExtra?
+  slots    ParkingSlot[]
+  versions ParkingLayoutVersion[]
+
+  @@map("Parking")
+}
+
+// [เรา] รหัสลาน (ใช้ทำป้ายช่อง เช่น P5-12) ลำดับแสดง การลบลาน และผังที่แอดมินแก้ (JSON)
+// Layout ว่าง = ใช้ผังตั้งต้นใน yard/domain/lot-layouts.ts
+model ParkingExtra {
+  parkingId BigInt    @id @map("ParkingID")
+  code      String    @unique @map("Code") @db.NVarChar(20)
+  sortOrder Int       @default(0) @map("SortOrder")
+  layout    String?   @map("Layout") @db.NVarChar(Max)
+  deletedAt DateTime? @map("DeletedAt")
+
+  parking Parking @relation(fields: [parkingId], references: [parkingId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@map("ParkingExtra")
 }
 
 model ParkingSlot {
-  id         Int            @id @default(autoincrement())
-  lotId      Int            @map("lot_id")
-  code       String         @db.VarChar(20)
-  baseStatus SlotBaseStatus @default(OPEN) @map("base_status")
-  // รอบของทุกวันที่กันไว้ไม่ให้จอง (เช่น โลจิสติกส์ 23:01–11:00) — ลำดับรอบในวัน เริ่มที่ 0
-  heldRounds Int[]          @default([]) @map("held_rounds")
-  deletedAt  DateTime?      @map("deleted_at") @db.Timestamptz(3)
-  createdAt  DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt  DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+  parkingSlotId BigInt    @id @default(autoincrement()) @map("ParkingSlotID")
+  parkingId     BigInt    @map("ParkingID")
+  slot          String    @map("Slot") @db.NVarChar(30)
+  // false = ช่องถูกลบ (เก็บแถวไว้ให้การจองเก่าอ้างถึงได้) — ปิด/สงวนสิทธิ์อยู่ใน ParkingSlotControl
+  isActive      Boolean   @default(true) @map("Is_Active")
+  createdBy     String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate   DateTime? @default(now()) @map("CreatedDate") @db.DateTime
 
-  lot         ParkingLot       @relation(fields: [lotId], references: [id])
-  occupancies SlotOccupancy[]
-  bookings    BookingSlot[]
-  fineSlots   FineSlot[]
-  statusLogs  SlotStatusLog[]
+  parking     Parking              @relation(fields: [parkingId], references: [parkingId], onDelete: NoAction, onUpdate: NoAction)
+  controls    ParkingSlotControl[]
+  bookings    BookingDetail[]
   inspections SlotInspection[]
 
-  @@unique([lotId, code])
-  @@map("parking_slots")
+  @@unique([parkingId, slot])
+  @@map("ParkingSlot")
 }
 
-model SlotStatusLog {
-  id          Int            @id @default(autoincrement())
-  slotId      Int            @map("slot_id")
-  fromStatus  SlotBaseStatus @map("from_status")
-  toStatus    SlotBaseStatus @map("to_status")
-  changedById Int            @map("changed_by_id")
-  reason      String?        @db.VarChar(500)
-  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+// ควบคุมสถานะช่องที่ตั้งด้วยมือ: ปิด (CLOSED) / สงวนสิทธิ์ (RESERVED) ตั้งแต่ StartDateTime ถึง EndDateTime
+// EndDateTime ว่าง = ไม่มีกำหนดสิ้นสุด; RoundID ว่าง = ทุกรอบ — เลิกตั้งสถานะ = ใส่ EndDateTime (เก็บประวัติไว้)
+model ParkingSlotControl {
+  id             BigInt    @id @default(autoincrement()) @map("ID")
+  parkingSlotId  BigInt    @map("ParkingSlotID")
+  slotStatusCode String    @map("SlotStatusCode") @db.NVarChar(500)
+  startDateTime  DateTime  @map("StartDateTime") @db.DateTime
+  endDateTime    DateTime? @map("EndDateTime") @db.DateTime
+  roundId        BigInt?   @map("RoundID")
+  reason         String?   @map("Reason") @db.NVarChar(500)
+  isActive       Boolean   @default(true) @map("Is_Active")
+  createdBy      String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate    DateTime? @default(now()) @map("CreatedDate") @db.DateTime
 
-  slot      ParkingSlot @relation(fields: [slotId], references: [id])
-  changedBy User        @relation(fields: [changedById], references: [id])
+  slot   ParkingSlot       @relation(fields: [parkingSlotId], references: [parkingSlotId], onDelete: NoAction, onUpdate: NoAction)
+  status ParkingSlotStatus @relation(fields: [slotStatusCode], references: [statusCode], onDelete: NoAction, onUpdate: NoAction)
+  round  BookingRound?     @relation(fields: [roundId], references: [roundId], onDelete: NoAction, onUpdate: NoAction)
 
-  @@index([slotId, createdAt])
-  @@map("slot_status_logs")
+  @@index([parkingSlotId, isActive])
+  @@map("ParkingSlotControl")
 }
 
-// ───────────── ตารางรอบ (ข้อ 3.2, ข้อ 2 ฟังก์ชันกำหนดเวลา) ─────────────
+// เวอร์ชันของลาน: ชุดรอบ (RoundNo) + ราคา ที่มีผลตั้งแต่ EffectiveDate (ช่องของการจองอ้าง ParkingSlot ตรง ๆ)
+// RoundNo ใน BookingRound ซ้ำได้ (หลายรอบต่อชุด) จึงไม่มี FK — ตรวจในโค้ด
+model ParkingLayoutVersion {
+  parkingLayoutId BigInt    @id @default(autoincrement()) @map("ParkingLayoutID")
+  parkingId       BigInt    @map("ParkingID")
+  roundNo         String    @map("RoundNo") @db.VarChar(13)
+  versionNo       String    @map("VersionNo") @db.NVarChar(30)
+  effectiveDate   DateTime  @map("EffectiveDate") @db.DateTime
+  isActive        Boolean   @default(true) @map("Is_Active")
+  createdBy       String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate     DateTime? @default(now()) @map("CreatedDate") @db.DateTime
 
-// ตั้งใหม่แบบมีผลตั้งแต่วันที่ เพิ่มแถวใหม่ทุกครั้ง ไม่แก้ทับ; ไม่มีแถวที่มีผล = 07:00 รอบละ 4 ชม.
-// วันมีผลต้องอยู่หลังช่วงจองล่วงหน้า การจองที่มีอยู่จึงไม่ถูกเปลี่ยนความหมายของเลขรอบ
-model RoundConfig {
-  id            Int      @id @default(autoincrement())
-  effectiveFrom DateTime @unique @map("effective_from") @db.Date
-  firstHour     Int      @map("first_hour") // ชั่วโมงเริ่มรอบแรกของวันบริการ 0–23
-  roundHours    Int      @map("round_hours") // ชั่วโมงต่อรอบ หาร 24 ลงตัว
-  createdById   Int      @map("created_by_id")
-  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  parking Parking       @relation(fields: [parkingId], references: [parkingId], onDelete: NoAction, onUpdate: NoAction)
+  rates   ParkingRate[]
 
-  createdBy User @relation(fields: [createdById], references: [id])
-
-  @@map("round_configs")
+  @@index([parkingId, effectiveDate])
+  @@map("ParkingLayoutVersion")
 }
 
-// ───────────── ราคา (ข้อ 2: ปรับตามหนังสืออนุญาตของบริษัทเท่านั้น) ─────────────
+// สถานะช่องจอด 5 สถานะพร้อมสี (Data Dictionary + Master data พ.ย. 2569) — เป็นข้อมูลอ้างอิง
+// สถานะที่ใช้งานจริงคำนวณใน yard/domain/slot-status.ts และหน้าเว็บใช้สีของระบบเอง (สีในตารางนี้ไม่ใช้วาดผัง)
+// StatusName_EN ในเอกสารเขียนความยาว 1 น่าจะพิมพ์ผิด จึงใช้ 500 ตามชนิดข้อมูล
+model ParkingSlotStatus {
+  id            BigInt    @id @default(autoincrement()) @map("ID")
+  statusCode    String    @unique @map("StatusCode") @db.NVarChar(500) // AVAILABLE | OCCUPIED | CLOSED | OVERTIME | RESERVED
+  statusNameTh  String?   @map("StatusName_TH") @db.NVarChar(500)
+  statusNameEn  String?   @map("StatusName_EN") @db.NVarChar(500)
+  description   String?   @map("Description") @db.NVarChar(500)
+  colorTh       String?   @map("Color_Th") @db.NVarChar(500)
+  colorEn       String?   @map("Color_En") @db.NVarChar(500)
+  htmlColorCode String?   @map("HtmlColorCode") @db.NVarChar(500)
+  isActive      Boolean   @default(true) @map("Is_Active")
+  createdBy     String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate   DateTime? @default(now()) @map("CreatedDate") @db.DateTime
 
-model RateConfig {
-  id                Int      @id @default(autoincrement())
-  lotId             Int?     @map("lot_id") // null = ใช้กับทุกลาน — ตอนนี้ราคาใช้กับทุกลาน (รอคำตอบเรื่องระดับราคา)
-  pricePerSlotRound Decimal  @map("price_per_slot_round") @db.Decimal(12, 2)
-  effectiveFrom     DateTime @map("effective_from") @db.Date
-  permitRef         String   @map("permit_ref") @db.VarChar(100) // เลขที่หนังสืออนุญาต
-  createdById       Int      @map("created_by_id")
-  createdAt         DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  controls ParkingSlotControl[]
 
-  lot       ParkingLot? @relation(fields: [lotId], references: [id])
-  createdBy User        @relation(fields: [createdById], references: [id])
-
-  @@index([lotId, effectiveFrom])
-  @@map("rate_configs")
+  @@map("ParkingSlotStatus")
 }
 
-// ───────────── การจอง (ข้อ 3) ─────────────
+model ParkingRate {
+  parkingRateId   BigInt    @id @default(autoincrement()) @map("ParkingRateID")
+  parkingLayoutId BigInt    @map("ParkingLayoutID")
+  rateAmount      Decimal   @map("RateAmount") @db.Decimal(10, 2) // ราคาต่อช่องต่อรอบ
+  isActive        Boolean   @default(true) @map("Is_Active")
+  createdBy       String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate     DateTime? @default(now()) @map("CreatedDate") @db.DateTime
 
-enum BookingType {
-  SHORT // <= 24 ชม.
-  LONG // > 1 วัน ใช้ช่วงเวลาและช่องจอดเดียวกันทุกวัน
+  version ParkingLayoutVersion @relation(fields: [parkingLayoutId], references: [parkingLayoutId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([parkingLayoutId])
+  @@map("ParkingRate")
 }
 
-enum PaymentPlan {
-  FULL // ชำระเต็มจำนวน
-  DAILY // ชำระวันต่อวัน (เฉพาะระยะยาว)
+// 1 แถว = 1 รอบในชุดรอบ RoundNo (R2026-11-0001); ชุดรอบมีผลตั้งแต่ EffectiveDate
+model BookingRound {
+  roundId       BigInt    @id @default(autoincrement()) @map("RoundID")
+  roundNo       String    @map("RoundNo") @db.VarChar(13)
+  roundSequence Int       @map("RoundSequence") // 1 = รอบแรกของวันบริการ
+  startTime     DateTime  @map("StartTime") @db.Time
+  endTime       DateTime  @map("EndTime") @db.Time
+  durationHour  Int       @map("DurationHour")
+  effectiveDate DateTime  @map("EffectiveDate") @db.DateTime
+  isActive      Boolean   @default(true) @map("Is_Active")
+  createBy      String?   @map("CreateBy") @db.NVarChar(30)
+  createDate    DateTime? @default(now()) @map("CreateDate") @db.DateTime
+
+  bookings     BookingDetail[]
+  slotControls ParkingSlotControl[]
+
+  @@unique([roundNo, roundSequence])
+  @@map("BookingRound")
 }
 
-enum BookingStatus {
-  PENDING_PAYMENT
-  CONFIRMED
-  COMPLETED
-  CANCELLED // ยกเลิกอัตโนมัติเมื่อไม่ชำระตามกำหนด — ไม่คืนเงิน
+model BookingPolicy {
+  id          BigInt    @id @default(autoincrement()) @map("ID")
+  policyCode  String    @unique @map("PolicyCode") @db.VarChar(30)
+  policyValue Int       @map("PolicyValue")
+  unit        String?   @map("Unit") @db.VarChar(20)
+  isActive    Boolean   @default(true) @map("Is_Active")
+  createBy    String?   @map("CreateBy") @db.VarChar(30)
+  createDate  DateTime? @default(now()) @map("CreateDate") @db.DateTime
+
+  @@map("BookingPolicy")
 }
 
-// เหตุที่ระบบยกเลิกการจองอัตโนมัติ (frontend แปลเป็นข้อความ)
-enum BookingCancelReason {
-  PAYMENT_EXPIRED // ไม่ชำระ QR ตอนยืนยันการจองภายในเวลา
-  DAILY_PAYMENT_OVERDUE // ไม่ชำระค่าบริการรายวันตามกำหนด
+// NotiType ในเอกสารเป็น varchar(10) แต่ค่า PARKING_END_CUSTOMER ยาว 20 ตัว จึงใช้ 30
+model NotificationSetting {
+  notiId           BigInt    @id @default(autoincrement()) @map("NotiID")
+  notiType         String    @map("NotiType") @db.VarChar(30) // PAYMENT_DUE | PARKING_END_CUSTOMER | PARKING_END_INSPECTOR
+  notiNameTh       String?   @map("NotiName_TH") @db.NVarChar(500)
+  // Data Dictionary (พ.ย. 2569) ระบุผู้รับเป็น RoleID — ลูกค้าไม่มีกลุ่มสิทธิ์ในระบบ จึงยังเก็บ RecipientType คู่กัน
+  roleId           BigInt?   @map("RoleID")
+  recipientType    String?   @map("RecipientType") @db.NVarChar(50) // CUSTOMER | EMPLOYEE
+  referTime        DateTime? @map("ReferTime") @db.Time
+  notiBeforeMinute Int?      @map("NotiBeforeMinute")
+  effectiveDate    DateTime? @map("EffectiveDate") @db.DateTime
+  isActive         Boolean   @default(true) @map("Is_Active")
+  createBy         String?   @map("CreateBy") @db.NVarChar(30)
+  createDate       DateTime? @default(now()) @map("CreateDate") @db.DateTime
+
+  schedules PaymentSchedule[]
+
+  @@index([notiType, effectiveDate])
+  @@map("NotificationSetting")
 }
 
-enum BookingSource {
-  SELF
-  CUSTOMER_SERVICE
-  IMPORT
+// ───────────── การจอง ─────────────
+
+model DocumentRunnings {
+  runningId   BigInt    @id @default(autoincrement()) @map("RunningID")
+  prefix      String    @map("Prefix") @db.Char(2)
+  year        String    @map("Year") @db.NVarChar(4)
+  month       String    @map("Month") @db.NVarChar(2)
+  lastNumber  Int       @map("LastNumber")
+  createdBy   String?   @map("CreatedBy") @db.NVarChar(30)
+  createdDate DateTime? @default(now()) @map("CreatedDate") @db.DateTime
+
+  @@unique([prefix, year, month])
+  @@map("DocumentRunnings")
 }
 
-model Booking {
-  id                Int                  @id @default(autoincrement())
-  bookingNo         String               @unique @map("booking_no") @db.VarChar(30)
-  customerId        Int                  @map("customer_id")
-  createdById       Int                  @map("created_by_id")
-  source            BookingSource        @default(SELF)
-  type              BookingType
-  paymentPlan       PaymentPlan          @default(FULL) @map("payment_plan")
-  status            BookingStatus        @default(PENDING_PAYMENT)
-  startDate         DateTime             @map("start_date") @db.Date // วันบริการ (เริ่มรอบแรกของวันตาม round_configs)
-  endDate           DateTime             @map("end_date") @db.Date
-  startRound        Int                  @map("start_round") // ลำดับรอบเริ่มของวันบริการ (0 = รอบแรก) — เวลาจริงดูจาก round_configs ที่มีผลวันนั้น
-  roundCount        Int                  @map("round_count") // ขั้นต่ำ 1 รอบ
-  // อัตรา ณ วันที่จอง — การเปลี่ยนราคาภายหลังไม่กระทบการจองเดิม
-  pricePerSlotRound Decimal              @map("price_per_slot_round") @db.Decimal(12, 2)
-  totalAmount       Decimal              @map("total_amount") @db.Decimal(12, 2)
-  cancelledAt       DateTime?            @map("cancelled_at") @db.Timestamptz(3)
-  cancelReason      BookingCancelReason? @map("cancel_reason")
-  createdAt         DateTime             @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt         DateTime             @updatedAt @map("updated_at") @db.Timestamptz(3)
+model BookingHeader {
+  bookingNo      String    @id @map("BookingNo") @db.VarChar(14) // BK2026-11-0001
+  bookingDate    DateTime  @default(now()) @map("BookingDate") @db.DateTime
+  bookingCusId   String    @map("BookingCusId") @db.NVarChar(6)
+  bookingChannel String    @map("BookingChannel") @db.Char(1) // N = จองปกติ | I = นำเข้าไฟล์
+  bookingType    String    @map("BookingType") @db.Char(1) // S | L
+  paymentType    String    @map("PaymentType") @db.Char(1) // F | D
+  paymentStatus  String    @map("PaymentStatus") @db.Char(1) // W | P | O | C
+  bookingStatus  String    @map("BookingStatus") @db.Char(1) // A | C
+  totalAmount    Decimal   @map("TotalAmount") @db.Decimal(10, 2)
+  paidAt         DateTime? @map("PaidAt") @db.DateTime
+  createdBy      String    @map("CreatedBy") @db.NVarChar(30) // EmpCode หรือ CusId เมื่อลูกค้าจองเอง
+  createdDate    DateTime  @default(now()) @map("CreatedDate") @db.DateTime
+  bookingRemark  String?   @map("BookingRemark") @db.NVarChar(500)
+  updatedBy      String?   @map("UpdatedBy") @db.NVarChar(30)
+  updatedDate    DateTime? @map("UpdatedDate") @db.DateTime
 
-  customer    User             @relation("BookingCustomer", fields: [customerId], references: [id])
-  createdBy   User             @relation("BookingCreatedBy", fields: [createdById], references: [id])
-  slots       BookingSlot[]
-  days        BookingDay[]
-  occupancies SlotOccupancy[]
-  payments    Payment[]
-  tickets     Ticket[]
-  inspections SlotInspection[]
-  fines       Fine[]
+  customer     CRMCustomer          @relation(fields: [bookingCusId], references: [cusId], onDelete: NoAction, onUpdate: NoAction)
+  type         BookingType          @relation(fields: [bookingType], references: [bookingType], onDelete: NoAction, onUpdate: NoAction)
+  payment      PaymentType          @relation(fields: [paymentType], references: [paymentType], onDelete: NoAction, onUpdate: NoAction)
+  status       BookingStatus        @relation(fields: [bookingStatus], references: [bookingStatus], onDelete: NoAction, onUpdate: NoAction)
+  details      BookingDetail[]
+  schedules    PaymentSchedule[]
+  transactions PaymentTransaction[]
+  fines        Fine[]
+  inspections  SlotInspection[]
 
-  @@index([customerId, status])
-  @@index([status, startDate])
-  @@map("bookings")
+  @@index([bookingCusId, bookingStatus])
+  @@index([bookingStatus, paymentStatus])
+  @@map("BookingHeader")
 }
 
-model BookingSlot {
-  bookingId Int @map("booking_id")
-  slotId    Int @map("slot_id")
+// 1 แถว = 1 ช่อง × 1 วันใช้งาน × 1 รอบ
+// การจองที่ยกเลิกยังเก็บแถวไว้ จึงกันจองซ้อนด้วยการล็อกแถว ParkingSlot ตอนจอง (booking.service) ไม่ใช่ unique
+model BookingDetail {
+  bookingDetailId     BigInt    @id @default(autoincrement()) @map("BookingDetailID")
+  bookingNo           String    @map("BookingNo") @db.VarChar(14)
+  usageDate           DateTime  @map("UsageDate") @db.Date
+  parkingSlotId       BigInt    @map("ParkingSlotID")
+  roundId             BigInt    @map("RoundID")
+  amount              Decimal   @map("Amount") @db.Decimal(10, 2) // ราคา ณ วันที่จอง
+  paidAt              DateTime? @map("PaidAt") @db.DateTime
+  remark              String?   @map("Remark") @db.NVarChar(500)
+  updatedBy           String?   @map("UpdatedBy") @db.NVarChar(30)
+  updatedDate         DateTime? @map("UpdatedDate") @db.DateTime
 
-  booking Booking     @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  slot    ParkingSlot @relation(fields: [slotId], references: [id])
+  booking    BookingHeader     @relation(fields: [bookingNo], references: [bookingNo], onDelete: NoAction, onUpdate: NoAction)
+  slot       ParkingSlot       @relation(fields: [parkingSlotId], references: [parkingSlotId], onDelete: NoAction, onUpdate: NoAction)
+  round      BookingRound      @relation(fields: [roundId], references: [roundId], onDelete: NoAction, onUpdate: NoAction)
+  schedules  PaymentSchedule[]
+  fines      Fine[]
 
-  @@id([bookingId, slotId])
-  @@index([slotId])
-  @@map("booking_slots")
+  @@index([parkingSlotId, usageDate, roundId])
+  @@index([bookingNo])
+  @@index([usageDate])
+  @@map("BookingDetail")
 }
 
-// ค่าบริการรายวันของการจอง — ใช้ติดตามการชำระวันต่อวัน
-model BookingDay {
-  id          Int       @id @default(autoincrement())
-  bookingId   Int       @map("booking_id")
-  serviceDate DateTime  @map("service_date") @db.Date
-  amount      Decimal   @db.Decimal(12, 2)
-  dueAt       DateTime  @map("due_at") @db.Timestamptz(3) // เที่ยงคืนก่อนวันใช้งานจริง
-  paymentId   Int?      @map("payment_id")
-  paidAt      DateTime? @map("paid_at") @db.Timestamptz(3)
+// งวดชำระวันต่อวัน: 1 แถวต่อ 1 วันใช้งานของใบจอง (ชำระทั้งใบ ไม่ใช่รายช่อง — รอ SA ยืนยัน)
+// BookingDetailID = แถวแรกของวันนั้น (บอกว่างวดนี้เป็นของวันใช้งานไหน), DueDate + DueTime = กำหนดชำระตามเวลาไทย
+model PaymentSchedule {
+  payScheduleId   BigInt    @id @default(autoincrement()) @map("PayScheduleID")
+  bookingDetailId BigInt?   @map("BookingDetailID")
+  bookingNo       String    @map("BookingNo") @db.VarChar(14)
+  sequenceNo      Int       @map("SequenceNo")
+  notiId          BigInt?   @map("NotiID")
+  dueDate         DateTime  @map("DueDate") @db.Date
+  dueTime         DateTime  @map("DueTime") @db.Time
+  reminder        DateTime? @map("Reminder") @db.DateTime
+  amountDue       Decimal   @map("AmountDue") @db.Decimal(10, 2)
+  paymentStatus   String    @map("PaymentStatus") @db.VarChar(1) // W | P | O | C
+  paidAt          DateTime? @map("PaidAt") @db.DateTime
+  remark          String?   @map("Remark") @db.NVarChar(500)
+  createdBy       String    @map("CreatedBy") @db.NVarChar(30)
+  createdDate     DateTime  @default(now()) @map("CreatedDate") @db.DateTime
+  updatedBy       String?   @map("UpdatedBy") @db.NVarChar(30)
+  updatedDate     DateTime? @map("UpdatedDate") @db.DateTime
 
-  booking Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  payment Payment? @relation(fields: [paymentId], references: [id])
+  detail       BookingDetail?        @relation(fields: [bookingDetailId], references: [bookingDetailId], onDelete: NoAction, onUpdate: NoAction)
+  booking      BookingHeader         @relation(fields: [bookingNo], references: [bookingNo], onDelete: NoAction, onUpdate: NoAction)
+  notification NotificationSetting?  @relation(fields: [notiId], references: [notiId], onDelete: NoAction, onUpdate: NoAction)
+  transactions PaymentScheduleItem[]
 
-  @@unique([bookingId, serviceDate])
-  @@index([dueAt, paidAt])
-  @@index([paymentId])
-  @@map("booking_days")
+  @@unique([bookingNo, sequenceNo])
+  @@index([paymentStatus, dueDate])
+  @@map("PaymentSchedule")
 }
 
-// 1 แถว = 1 ช่องจอด x 1 วันบริการ x 1 รอบ; unique กันจองซ้อนที่ระดับฐานข้อมูล
-model SlotOccupancy {
-  id          Int      @id @default(autoincrement())
-  slotId      Int      @map("slot_id")
-  serviceDate DateTime @map("service_date") @db.Date
-  roundIndex  Int      @map("round_index")
-  bookingId   Int      @map("booking_id")
+// ───────────── ประวัติการจอง (Data Dictionary พ.ย. 2569) ─────────────
+// สำเนาใบจอง + รายการย่อย + งวดชำระ ก่อนแก้ไขทุกครั้ง (booking/booking-history.ts)
+// HistoryGroupID นับต่อใบจอง: ครั้งแรก 1 ครั้งถัดไป +1 — ตารางรายการย่อย/งวดอ้างชุดเดียวกันด้วย BookingNo + HistoryGroupID
+// [ถาม SA] เอกสารไม่ระบุว่านับต่อใบจองหรือทั้งระบบ และไม่ได้กำหนดว่าแก้อะไรบ้างจึงเก็บประวัติ
+// ไม่ผูก FK กับตารางหลัก: ประวัติต้องอยู่ได้แม้ข้อมูลหลักเปลี่ยน
 
-  slot    ParkingSlot @relation(fields: [slotId], references: [id])
-  booking Booking     @relation(fields: [bookingId], references: [id], onDelete: Cascade)
+model BookingHeaderHistory {
+  id             BigInt    @id @default(autoincrement()) @map("ID")
+  historyGroupId Int       @map("HistoryGroupID")
+  bookingNo      String    @map("BookingNo") @db.VarChar(14)
+  bookingDate    DateTime  @map("BookingDate") @db.DateTime
+  bookingCusId   String    @map("BookingCusId") @db.NVarChar(6)
+  bookingChannel String    @map("BookingChannel") @db.Char(1)
+  bookingType    String    @map("BookingType") @db.Char(1)
+  paymentType    String    @map("PaymentType") @db.Char(1)
+  paymentStatus  String    @map("PaymentStatus") @db.Char(1)
+  bookingStatus  String    @map("BookingStatus") @db.Char(1)
+  totalAmount    Decimal   @map("TotalAmount") @db.Decimal(10, 2)
+  paidAt         DateTime? @map("PaidAt") @db.DateTime
+  createdBy      String    @map("CreatedBy") @db.NVarChar(30)
+  createdDate    DateTime  @map("CreatedDate") @db.DateTime
+  bookingRemark  String?   @map("BookingRemark") @db.NVarChar(500)
+  updatedBy      String?   @map("UpdatedBy") @db.NVarChar(30)
+  updatedDate    DateTime? @map("UpdatedDate") @db.DateTime
 
-  @@unique([slotId, serviceDate, roundIndex])
-  @@index([bookingId])
-  @@map("slot_occupancies")
+  @@unique([bookingNo, historyGroupId])
+  @@map("BookingHeaderHistory")
 }
 
-// ───────────── การชำระเงิน (ข้อ 6, 7) ─────────────
+model BookingDetailHistory {
+  id                  BigInt    @id @default(autoincrement()) @map("ID")
+  historyGroupId      Int       @map("HistoryGroupID")
+  bookingDetailId     BigInt    @map("BookingDetailID")
+  bookingNo           String    @map("BookingNo") @db.VarChar(14)
+  usageDate           DateTime  @map("UsageDate") @db.Date
+  parkingSlotId       BigInt    @map("ParkingSlotID")
+  roundId             BigInt    @map("RoundID")
+  amount              Decimal   @map("Amount") @db.Decimal(10, 2)
+  paidAt              DateTime? @map("PaidAt") @db.DateTime
+  remark              String?   @map("Remark") @db.NVarChar(500)
+  updatedBy           String?   @map("UpdatedBy") @db.NVarChar(30)
+  updatedDate         DateTime? @map("UpdatedDate") @db.DateTime
 
-enum PaymentStatus {
-  PENDING
-  PAID
-  EXPIRED
+  @@index([bookingNo, historyGroupId])
+  @@map("BookingDetailHistory")
 }
 
-enum PaymentPurpose {
-  BOOKING
-  FINE
+model PaymentScheduleHistory {
+  id              BigInt    @id @default(autoincrement()) @map("ID")
+  historyGroupId  Int       @map("HistoryGroupID")
+  payScheduleId   BigInt    @map("PayScheduleID")
+  bookingDetailId BigInt?   @map("BookingDetailID")
+  bookingNo       String    @map("BookingNo") @db.VarChar(14)
+  sequenceNo      Int       @map("SequenceNo")
+  notiId          BigInt?   @map("NotiID")
+  dueDate         DateTime  @map("DueDate") @db.Date
+  dueTime         DateTime  @map("DueTime") @db.Time
+  reminder        DateTime? @map("Reminder") @db.DateTime
+  amountDue       Decimal   @map("AmountDue") @db.Decimal(10, 2)
+  paymentStatus   String    @map("PaymentStatus") @db.VarChar(1)
+  paidAt          DateTime? @map("PaidAt") @db.DateTime
+  remark          String?   @map("Remark") @db.NVarChar(500)
+  createdBy       String    @map("CreatedBy") @db.NVarChar(30)
+  createdDate     DateTime  @map("CreatedDate") @db.DateTime
+  updatedBy       String?   @map("UpdatedBy") @db.NVarChar(30)
+  updatedDate     DateTime? @map("UpdatedDate") @db.DateTime
+
+  @@index([bookingNo, historyGroupId])
+  @@map("PaymentScheduleHistory")
 }
 
-model Payment {
-  id            Int            @id @default(autoincrement())
-  transactionNo String         @unique @map("transaction_no") @db.VarChar(50) // ขึ้นต้นด้วย Transaction Prefix Code ของ YCS
-  purpose       PaymentPurpose @default(BOOKING)
-  bookingId     Int?           @map("booking_id")
-  amount        Decimal        @db.Decimal(12, 2)
-  status        PaymentStatus  @default(PENDING)
-  qrPayload     String?        @map("qr_payload") @db.Text
-  gatewayRef    String?        @unique @map("gateway_ref") @db.VarChar(100)
-  expiresAt     DateTime       @map("expires_at") @db.Timestamptz(3) // "ชำระภายใน [วันและเวลา]"
-  paidAt        DateTime?      @map("paid_at") @db.Timestamptz(3)
-  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
-  updatedAt     DateTime       @updatedAt @map("updated_at") @db.Timestamptz(3)
+// ───────────── [เรา] การชำระเงินผ่าน QR และใบเสร็จ — รอ spec Payment Gateway ─────────────
 
-  booking     Booking?     @relation(fields: [bookingId], references: [id])
-  bookingDays BookingDay[]
-  receipt     Receipt?
-  fine        Fine?
+model PaymentTransaction {
+  id            Int       @id @default(autoincrement()) @map("ID")
+  transactionNo String    @unique @map("TransactionNo") @db.NVarChar(50) // ขึ้นต้นด้วยรหัสธุรกรรมของ YCS
+  purpose       String    @default("BOOKING") @map("Purpose") @db.VarChar(30) // BOOKING | FINE
+  bookingNo     String?   @map("BookingNo") @db.VarChar(14)
+  amount        Decimal   @map("Amount") @db.Decimal(10, 2)
+  status        String    @default("PENDING") @map("Status") @db.VarChar(30) // PENDING | PAID | EXPIRED
+  qrPayload     String?   @map("QrPayload") @db.NVarChar(Max)
+  gatewayRef    String?   @unique @map("GatewayRef") @db.NVarChar(100)
+  expiresAt     DateTime  @map("ExpiresAt")
+  paidAt        DateTime? @map("PaidAt")
+  createdDate   DateTime  @default(now()) @map("CreatedDate")
+  updatedDate   DateTime  @updatedAt @map("UpdatedDate")
+
+  booking   BookingHeader?        @relation(fields: [bookingNo], references: [bookingNo], onDelete: NoAction, onUpdate: NoAction)
+  schedules PaymentScheduleItem[]
+  receipt   Receipt?
+  fine      Fine?
 
   @@index([status, expiresAt])
-  @@index([bookingId])
-  @@map("payments")
+  @@index([bookingNo])
+  @@map("PaymentTransaction")
 }
 
+// งวดชำระที่ธุรกรรม QR หนึ่งครั้งครอบคลุม
+model PaymentScheduleItem {
+  paymentId     Int    @map("PaymentID")
+  payScheduleId BigInt @map("PayScheduleID")
+
+  payment  PaymentTransaction @relation(fields: [paymentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  schedule PaymentSchedule    @relation(fields: [payScheduleId], references: [payScheduleId], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([paymentId, payScheduleId])
+  @@index([payScheduleId])
+  @@map("PaymentScheduleItem")
+}
+
+// ใบกำกับภาษีอย่างย่อ: เก็บภาษี ณ วันที่ออก
 model Receipt {
-  id              Int      @id @default(autoincrement())
-  receiptNo       String   @unique @map("receipt_no") @db.VarChar(30)
-  paymentId       Int      @unique @map("payment_id")
-  // ใบกำกับภาษีอย่างย่อ: เก็บภาษี ณ วันที่ออก ใบที่ออกแล้วต้องไม่เปลี่ยนแม้อัตราภาษีเปลี่ยนภายหลัง
-  vatRatePercent  Decimal  @map("vat_rate_percent") @db.Decimal(5, 2)
-  amountBeforeVat Decimal  @map("amount_before_vat") @db.Decimal(12, 2)
-  vatAmount       Decimal  @map("vat_amount") @db.Decimal(12, 2)
-  issuedAt        DateTime @default(now()) @map("issued_at") @db.Timestamptz(3)
+  id              Int      @id @default(autoincrement()) @map("ID")
+  receiptNo       String   @unique @map("ReceiptNo") @db.NVarChar(30)
+  paymentId       Int      @unique @map("PaymentID")
+  vatRatePercent  Decimal  @map("VatRatePercent") @db.Decimal(5, 2)
+  amountBeforeVat Decimal  @map("AmountBeforeVat") @db.Decimal(10, 2)
+  vatAmount       Decimal  @map("VatAmount") @db.Decimal(10, 2)
+  issuedAt        DateTime @default(now()) @map("IssuedAt")
 
-  payment Payment @relation(fields: [paymentId], references: [id])
+  payment PaymentTransaction @relation(fields: [paymentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@map("receipts")
+  @@map("Receipt")
 }
 
-model Ticket {
-  id          Int      @id @default(autoincrement())
-  ticketNo    String   @unique @map("ticket_no") @db.VarChar(30)
-  bookingId   Int      @map("booking_id")
-  serviceDate DateTime @map("service_date") @db.Date
-  issuedAt    DateTime @default(now()) @map("issued_at") @db.Timestamptz(3)
+// ───────────── ค่าปรับ (Data Dictionary) ─────────────
 
-  booking Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-
-  @@unique([bookingId, serviceDate])
-  @@map("tickets")
-}
-
-// ───────────── ค่าปรับ (ข้อ 5) ─────────────
-
+// ค่าปรับ 1 ใบ = 1 ช่อง: ผูกกับ BookingDetail ของรอบสุดท้ายที่จบก่อนจอดเกิน (Data Dictionary — SA ยืนยัน 10 พ.ย. 2569)
+// ยังไม่มี FineRate / PaymentStatus / Blacklist ตามเอกสาร (รอ SA บอกหน่วยของอัตราค่าปรับ) — สถานะชำระอ่านจาก PaymentTransaction
 model Fine {
-  id         Int      @id @default(autoincrement())
-  fineNo     String   @unique @map("fine_no") @db.VarChar(30)
-  customerId Int?     @map("customer_id")
-  // การจองที่จอดเกินเวลา (ค่าปรับเก่าก่อนมีคอลัมน์นี้เป็น null)
-  bookingId  Int?     @map("booking_id")
-  issuedById Int      @map("issued_by_id")
-  reason     String   @db.VarChar(500)
-  amount     Decimal  @db.Decimal(12, 2)
-  paymentId  Int?     @unique @map("payment_id")
-  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  id              Int       @id @default(autoincrement()) @map("ID")
+  fineNo          String    @unique @map("FineNo") @db.NVarChar(30)
+  cusId           String?   @map("CusId") @db.NVarChar(6)
+  bookingNo       String?   @map("BookingNo") @db.VarChar(14)
+  bookingDetailId BigInt    @map("BookingDetailID")
+  endDateTime     DateTime? @map("EndDateTime") @db.DateTime // สิทธิ์จอดสิ้นสุดเมื่อไร
+  overtimeMinute  Int?      @map("OvertimeMinute") // เกินกี่นาที ณ ตอนบันทึก
+  issuedBy        String    @map("IssuedBy") @db.NVarChar(30) // EmpCode
+  reason          String    @map("Reason") @db.NVarChar(500)
+  amount          Decimal   @map("Amount") @db.Decimal(10, 2)
+  paymentId       Int?      @unique @map("PaymentID")
+  createdDate     DateTime  @default(now()) @map("CreatedDate")
 
-  customer User?      @relation("FineCustomer", fields: [customerId], references: [id])
-  issuedBy User       @relation("FineIssuedBy", fields: [issuedById], references: [id])
-  booking  Booking?   @relation(fields: [bookingId], references: [id])
-  payment  Payment?   @relation(fields: [paymentId], references: [id])
-  slots    FineSlot[]
+  booking BookingHeader?      @relation(fields: [bookingNo], references: [bookingNo], onDelete: NoAction, onUpdate: NoAction)
+  detail  BookingDetail       @relation(fields: [bookingDetailId], references: [bookingDetailId], onDelete: NoAction, onUpdate: NoAction)
+  payment PaymentTransaction? @relation(fields: [paymentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
 
-  @@index([customerId])
-  @@index([bookingId])
-  @@map("fines")
+  @@index([cusId])
+  @@index([bookingNo])
+  @@index([bookingDetailId])
+  @@map("Fine")
 }
 
-// ช่องที่ถูกปรับในค่าปรับใบเดียว (Screen Design หน้า 16: ผู้จองคนเดียวจอดเกินหลายช่องของการจองเดียวกัน)
-model FineSlot {
-  fineId Int @map("fine_id")
-  slotId Int @map("slot_id")
+// ───────────── [เรา] ผลตรวจหน้างาน ─────────────
 
-  fine Fine        @relation(fields: [fineId], references: [id], onDelete: Cascade)
-  slot ParkingSlot @relation(fields: [slotId], references: [id])
-
-  @@id([fineId, slotId])
-  @@index([slotId])
-  @@map("fine_slots")
-}
-
-// ───────────── ผลตรวจหน้างาน (ข้อ 4, 5) ─────────────
-
-enum InspectionResult {
-  VACATED // รถออกแล้ว — ช่องพ้นสถานะหมดเวลา
-  STILL_PARKED // ยังจอดอยู่หลังหมดเวลา
-}
-
-// ผลตรวจของช่องจอดในวันบริการหนึ่งของการจอง; ไม่มีแถว VACATED = ถือว่ายังไม่ยืนยันว่ารถออก
+// ไม่มีแถว VACATED = ยังไม่ยืนยันว่ารถออก (ช่องยังเป็นสีเหลือง)
 model SlotInspection {
-  id          Int              @id @default(autoincrement())
-  slotId      Int              @map("slot_id")
-  bookingId   Int              @map("booking_id")
-  serviceDate DateTime         @map("service_date") @db.Date
-  result      InspectionResult
-  inspectorId Int              @map("inspector_id")
-  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
+  id            Int      @id @default(autoincrement()) @map("ID")
+  parkingSlotId BigInt   @map("ParkingSlotID")
+  bookingNo     String   @map("BookingNo") @db.VarChar(14)
+  usageDate     DateTime @map("UsageDate") @db.Date
+  result        String   @map("Result") @db.VarChar(30) // VACATED | STILL_PARKED
+  inspectedBy   String   @map("InspectedBy") @db.NVarChar(30) // EmpCode
+  createdDate   DateTime @default(now()) @map("CreatedDate")
 
-  slot      ParkingSlot @relation(fields: [slotId], references: [id])
-  booking   Booking     @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  inspector User        @relation(fields: [inspectorId], references: [id])
+  slot    ParkingSlot   @relation(fields: [parkingSlotId], references: [parkingSlotId], onDelete: NoAction, onUpdate: NoAction)
+  booking BookingHeader @relation(fields: [bookingNo], references: [bookingNo], onDelete: NoAction, onUpdate: NoAction)
 
-  @@index([slotId, serviceDate])
-  @@map("slot_inspections")
+  @@index([parkingSlotId, usageDate])
+  @@map("SlotInspection")
 }
 
-// ───────────── แจ้งเตือน / ตั้งค่า / audit ─────────────
+// ───────────── [เรา] แจ้งเตือนที่ส่งแล้ว / ตั้งค่า / ประวัติการใช้งาน ─────────────
 
-enum NotificationType {
-  PARKING_EXPIRING // ล่วงหน้า 15 นาทีก่อนหมดเวลา
-  PARKING_OVERTIME // แจ้งเจ้าหน้าที่ตรวจสอบเมื่อหมดเวลา
-  PAYMENT_DUE
-  BOOKING_CANCELLED
+model NotificationLog {
+  id            Int       @id @default(autoincrement()) @map("ID")
+  recipientType String    @map("RecipientType") @db.VarChar(30) // CUSTOMER | EMPLOYEE
+  recipientCode String    @map("RecipientCode") @db.NVarChar(30) // CusId หรือ EmpCode
+  type          String    @map("Type") @db.VarChar(30) // PARKING_EXPIRING | PARKING_OVERTIME | PAYMENT_DUE | BOOKING_CANCELLED
+  title         String    @map("Title") @db.NVarChar(255)
+  body          String    @map("Body") @db.NVarChar(Max)
+  dedupeKey     String?   @unique @map("DedupeKey") @db.NVarChar(150) // กันส่งซ้ำ
+  readAt        DateTime? @map("ReadAt")
+  createdDate   DateTime  @default(now()) @map("CreatedDate")
+
+  @@index([recipientType, recipientCode, readAt])
+  @@map("NotificationLog")
 }
 
-model Notification {
-  id        Int              @id @default(autoincrement())
-  userId    Int              @map("user_id")
-  type      NotificationType
-  title     String           @db.VarChar(255)
-  body      String           @db.Text
-  // กันส่งซ้ำ เช่น "expiring:<bookingId>:<serviceDate>"
-  dedupeKey String?          @unique @map("dedupe_key") @db.VarChar(150)
-  readAt    DateTime?        @map("read_at") @db.Timestamptz(3)
-  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@index([userId, readAt])
-  @@map("notifications")
-}
-
+// ค่าที่ไม่ใช่ตัวเลข จึงเก็บใน BookingPolicy ไม่ได้ (รหัสนำหน้าธุรกรรม)
 model SystemSetting {
-  key         String   @id @db.VarChar(100)
-  value       String   @db.Text
-  updatedById Int?     @map("updated_by_id")
-  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz(3)
+  key         String   @id @map("SettingKey") @db.NVarChar(100)
+  value       String   @map("SettingValue") @db.NVarChar(Max)
+  updatedBy   String?  @map("UpdatedBy") @db.NVarChar(30)
+  updatedDate DateTime @updatedAt @map("UpdatedDate")
 
-  updatedBy User? @relation(fields: [updatedById], references: [id], onDelete: SetNull)
-
-  @@map("system_settings")
+  @@map("SystemSetting")
 }
 
 model AuditLog {
-  id        Int      @id @default(autoincrement())
-  userId    Int?     @map("user_id")
-  action    String   @db.VarChar(100)
-  entity    String   @db.VarChar(100)
-  entityId  String?  @map("entity_id") @db.VarChar(100)
-  detail    Json?
-  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
-
-  user User? @relation(fields: [userId], references: [id])
+  id          Int      @id @default(autoincrement()) @map("ID")
+  actorCode   String?  @map("ActorCode") @db.NVarChar(30) // EmpCode หรือ CusId
+  action      String   @map("Action") @db.NVarChar(100)
+  entity      String   @map("Entity") @db.NVarChar(100)
+  entityId    String?  @map("EntityID") @db.NVarChar(100)
+  detail      String?  @map("Detail") @db.NVarChar(Max)
+  createdDate DateTime @default(now()) @map("CreatedDate")
 
   @@index([entity, entityId])
-  @@index([createdAt])
-  @@map("audit_logs")
+  @@index([createdDate])
+  @@map("AuditLog")
 }

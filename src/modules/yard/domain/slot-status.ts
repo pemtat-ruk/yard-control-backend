@@ -12,13 +12,11 @@ export type SlotFacts = {
   lotOpen: boolean;
   occupied: boolean; // มีการจองในช่วงเวลาที่ดู
   overtime: boolean; // หมดเวลาแล้วแต่ยังไม่ยืนยันว่ารถออก
-  held?: boolean; // ช่วงเวลาที่ดูทับรอบที่กันช่องไว้ (heldRounds) — จองไม่ได้เหมือนปิด
 };
 
 // สถานะจริงของช่องจอด: ปิดใช้งานมาก่อน ตามด้วยการใช้งานจริง แล้วจึงเป็นสถานะที่ตั้งไว้
 export function resolveStatus(facts: SlotFacts): SlotStatus {
-  if (!facts.lotOpen || facts.baseStatus === 'CLOSED' || facts.held)
-    return 'CLOSED';
+  if (!facts.lotOpen || facts.baseStatus === 'CLOSED') return 'CLOSED';
   if (facts.occupied) return 'OCCUPIED';
   if (facts.overtime) return 'OVERTIME';
   return facts.baseStatus === 'RESERVED' ? 'RESERVED' : 'AVAILABLE';

@@ -7,19 +7,19 @@ REST API ของระบบลานจอดรถจัดเรียง�
 ## Tech Stack
 
 - **NestJS 12** (TypeScript, ESM)
-- **PostgreSQL + Prisma 7** (driver adapter `@prisma/adapter-pg`)
+- **SQL Server + Prisma 7** (driver adapter `@prisma/adapter-mssql`)
 - **class-validator** ตรวจ request, **Swagger** สร้างเอกสาร API
 - **Vitest** + supertest สำหรับ unit และ e2e test, **oxlint** + Prettier
 - **helmet** (security header), **@nestjs/throttler** (rate limit), **pino** (log แบบ JSON)
 
 ## เริ่มต้นใช้งาน
 
-ต้องมี Node.js 22 ขึ้นไป และ PostgreSQL
+ต้องมี Node.js 22 ขึ้นไป และ SQL Server
 
 ```bash
 npm install
 cp .env.example .env      # แก้ DATABASE_URL ให้ตรงกับเครื่อง
-docker compose up -d      # PostgreSQL สำหรับพัฒนา (ถ้ายังไม่มีฐานข้อมูล)
+docker compose up -d      # SQL Server สำหรับพัฒนา (ถ้ายังไม่มีฐานข้อมูล)
 npm run db:migrate        # สร้างตารางจาก prisma/schema.prisma
 npm run db:seed           # ลานจอด A, B และบัญชีพนักงาน CS001 / YD001 / IT001
 npm run start:dev         # http://localhost:4000
@@ -118,7 +118,11 @@ Base URL: `http://localhost:4000/api/v1` — เอกสารแบบลอ�
 | 422 | `BOOKING_CUSTOMER_INVALID` | จองแทน: ไม่พบผู้ขอใช้บริการ |
 | 422 | `BOOKING_DAYS_NOT_PAYABLE` | ชำระรายวันไม่ได้ (ชำระแล้ว หรือการจองไม่ได้ใช้งานอยู่) |
 | 409 | `PAYMENT_EXPIRED` | รายการชำระหมดอายุ |
-| 409 | `SLOT_HAS_BOOKINGS` | ปิด/ลบช่องที่ยังมีการจองค้างอยู่ |
+| 409 | `SLOT_HAS_BOOKINGS` | ปิด/ลบช่องที่ยังมีการจองค้างอยู่ (ลบจากหน้าจัดผัง: `details` = เลขช่อง) |
+| 409 | `SLOT_CODE_TAKEN` | เลขช่องซ้ำกับช่องที่มีอยู่ในลาน (`details` = เลขช่อง) |
+| 400 | `LAYOUT_INVALID` | ผังของลานผิดรูปแบบ |
+| 400 | `LAYOUT_UNKNOWN_SLOT` | ผังมีช่องที่ลานนี้ไม่มี (`details` = เลขช่อง) |
+| 400 | `LAYOUT_DUPLICATE_SLOT` | ผังวางช่องเดียวกันซ้ำ (`details` = เลขช่อง) |
 | 422 | `INSPECTION_UNDO_EXPIRED` / `INSPECTION_UNDO_NOT_ALLOWED` | เลยเวลาเลิกทำ หรือไม่ใช่ผู้ตรวจที่บันทึก |
 | 422 | `ROUND_HOURS_INVALID` / `ROUND_FIRST_HOUR_INVALID` / `ROUND_EFFECTIVE_TOO_SOON` | ตารางรอบไม่ถูกต้อง หรือวันมีผลอยู่ในช่วงที่จองได้แล้ว |
 | 409 | `ROUND_CONFIG_HAS_BOOKINGS` | มีการจองใช้วันนั้นแล้ว (`details[0]` = วันแรกที่ตั้งได้) |

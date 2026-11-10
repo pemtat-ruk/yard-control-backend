@@ -1,18 +1,19 @@
 import { toDbDate } from '../../common/service-date.js';
 import type { PrismaService } from '../../prisma/prisma.service.js';
+import { CONFIRMED_BOOKING } from './domain/booking-status.js';
 import { roundAfterUsage, type RoundSchedule } from './domain/rounds.js';
 
 export type UsageOfDay = {
-  customerId: number;
+  customerId: string; // CusId
   slotIds: number[];
   serviceDate: string;
   startRound: number;
   roundCount: number;
-  // ตารางรอบของการจอง (ตามวันแรกของการจอง)
+  // ตารางรอบของวันบริการนั้น
   schedule: RoundSchedule;
 };
 
-// Workflow ข้อ 5: "ช่องจอดเดิมมีรอบจองต่อเนื่อง" = ผู้จองคนเดิมจองทุกช่องของรายการนี้ไว้ในรอบถัดไปทันที
+// Workflow ข้อ 5: "ช่องจอดเดิมมีรอบจองต่อเนื่อง" = ผู้จองคนเดิมจองทุกช่องของรายการนี้ไว้ในรอบถัดไปทันที (ชำระแล้ว)
 // ใช้ทั้งงานแจ้งเตือนตามเวลา และตารางการจองของผู้ขอใช้บริการ
 export async function continuesInNextRound(
   prisma: PrismaService,
@@ -24,16 +25,15 @@ export async function continuesInNextRound(
     usage.roundCount,
     usage.schedule,
   );
-  const continued = await prisma.slotOccupancy.count({
+  const continued = await prisma.bookingDetail.findMany({
     where: {
-      slotId: { in: usage.slotIds },
-      serviceDate: toDbDate(next.serviceDate),
-      roundIndex: next.roundIndex,
-      booking: {
-        customerId: usage.customerId,
-        status: { in: ['CONFIRMED', 'COMPLETED'] },
-      },
+      parkingSlotId: { in: usage.slotIds },
+      usageDate: toDbDate(next.serviceDate),
+      round: { roundSequence: next.roundIndex + 1 },
+      booking: { bookingCusId: usage.customerId, ...CONFIRMED_BOOKING },
     },
+    select: { parkingSlotId: true },
   });
-  return continued === usage.slotIds.length;
+  const covered = new Set(continued.map((row) => Number(row.parkingSlotId)));
+  return usage.slotIds.every((slotId) => covered.has(slotId));
 }

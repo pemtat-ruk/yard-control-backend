@@ -7,14 +7,14 @@ export type InspectionUndoError =
   'INSPECTION_UNDO_NOT_ALLOWED' | 'INSPECTION_UNDO_EXPIRED';
 
 export function checkInspectionUndo(
-  inspection: { inspectorId: number; result: string; createdAt: Date },
-  actorId: number,
+  inspection: { inspectedBy: string; result: string; createdDate: Date },
+  actor: string,
   now: Date,
 ): InspectionUndoError | null {
-  if (inspection.result !== 'VACATED' || inspection.inspectorId !== actorId) {
+  if (inspection.result !== 'VACATED' || inspection.inspectedBy !== actor) {
     return 'INSPECTION_UNDO_NOT_ALLOWED';
   }
-  const age = now.getTime() - inspection.createdAt.getTime();
+  const age = now.getTime() - inspection.createdDate.getTime();
   return age > INSPECTION_UNDO_MINUTES * MS_PER_MINUTE
     ? 'INSPECTION_UNDO_EXPIRED'
     : null;

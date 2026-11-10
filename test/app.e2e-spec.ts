@@ -16,11 +16,14 @@ describe('API (e2e)', () => {
       .useValue({
         $queryRaw: () =>
           databaseUp ? Promise.resolve([1]) : Promise.reject(new Error('down')),
-        // ยังไม่เคยตั้งราคา ตารางรอบ ค่าระบบ และไม่มีผู้ใช้ในระบบ (ใช้ค่าตั้งต้นตามเอกสาร)
-        rateConfig: { findFirst: () => Promise.resolve(null) },
-        roundConfig: { findMany: () => Promise.resolve([]) },
-        systemSetting: { findMany: () => Promise.resolve([]) },
-        user: { findUnique: () => Promise.resolve(null) },
+        // ยังไม่มีชุดรอบ เวอร์ชันผัง ค่าระบบ และผู้ใช้ในระบบ (ใช้ค่าตั้งต้นตามเอกสาร)
+        bookingRound: { findMany: () => Promise.resolve([]) },
+        parkingLayoutVersion: { findMany: () => Promise.resolve([]) },
+        bookingPolicy: { findMany: () => Promise.resolve([]) },
+        notificationSetting: { findFirst: () => Promise.resolve(null) },
+        systemSetting: { findUnique: () => Promise.resolve(null) },
+        employeeView: { findUnique: () => Promise.resolve(null) },
+        cRMCustomer: { findUnique: () => Promise.resolve(null) },
       })
       .compile();
     app = moduleRef.createNestApplication<NestExpressApplication>();

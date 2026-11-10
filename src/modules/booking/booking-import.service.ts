@@ -1,27 +1,35 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import { Prisma, type BookingStatus } from '@prisma/client';
 import { ApiException } from '../../common/api-exception.js';
+import { nextDocumentNo } from '../../common/document-no.js';
+import { loadPeople } from '../../common/people.js';
 import {
   bangkokInstant,
-  fromDbDate,
   toDbDate,
   todayInBangkok,
 } from '../../common/service-date.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
-import {
-  labelOf,
-  parseSlotLabel,
-  SLOT_WITH_LOT,
-  sortedLabels,
-} from '../yard/domain/slot-label.js';
-import { AuditService } from '../audit/audit.service.js';
+import { labelOf, parseSlotLabel } from '../yard/domain/slot-label.js';
+import { AuditService, parseAuditDetail } from '../audit/audit.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
-import { PricingService } from '../pricing/pricing.service.js';
+import { customerName } from '../auth/domain/customer.js';
+import { LayoutService } from '../layout/layout.service.js';
 import { isBookableBy, resolveStatus } from '../yard/domain/slot-status.js';
-import { heldDuring } from '../yard/domain/availability.js';
-import { bookingNoFor, tempBookingNo } from './booking-number.js';
-import { CUSTOMER_TYPES } from './booking.service.js';
+import {
+  loadActiveSlots,
+  loadOccupancies,
+  type SlotRow,
+} from '../yard/yard-store.js';
+import { BOOKING_INCLUDE, toBookingView } from './booking-record.js';
+import { BookingService } from './booking.service.js';
 import { parseImportFile, type ImportRow } from './domain/import-file.js';
+import {
+  BOOKING_ACTIVE,
+  BOOKING_TYPE_CODE,
+  CHANNEL_IMPORT,
+  PAY_WAITING,
+  PAYMENT_TYPE_CODE,
+  type BookingStatus,
+} from './domain/booking-status.js';
 import { parseImportDetail } from './domain/import-history.js';
 import {
   classifyBooking,
@@ -68,7 +76,7 @@ export type ImportHistoryItem = {
 
 // Screen Design หน้า 14 "ดูรายละเอียด": การจองที่สร้างจากไฟล์หนึ่ง พร้อมสถานะปัจจุบัน
 export type ImportedBooking = {
-  id: number;
+  id: string;
   bookingNo: string;
   customerName: string;
   slots: string[];
@@ -80,7 +88,8 @@ export type ImportedBooking = {
 const IMPORT_HISTORY_LIMIT = 50;
 
 type CheckedRow = ImportRowView & {
-  customerId: number | null;
+  customerId: string | null;
+  slotRows: SlotRow[];
   slotIds: number[];
   request: BookingRequest;
   price: number;
@@ -97,9 +106,10 @@ const occupancyKey = (slotId: number, date: string, round: number) =>
 export class BookingImportService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly pricing: PricingService,
+    private readonly layout: LayoutService,
     private readonly audit: AuditService,
     private readonly rounds: RoundsService,
+    private readonly bookings: BookingService,
   ) {}
 
   async preview(csv: string, now: Date = new Date()): Promise<ImportPreview> {
@@ -123,74 +133,82 @@ export class BookingImportService {
       );
     }
 
-    let bookingNos: string[];
-    try {
-      bookingNos = await this.prisma.$transaction(async (tx) => {
-        const created: string[] = [];
-        for (const row of rows) {
-          const dates = serviceDates(row.request);
-          const booking = await tx.booking.create({
-            data: {
-              bookingNo: tempBookingNo(),
-              customerId: row.customerId as number,
-              createdById: user.id,
-              source: 'IMPORT',
-              status: 'CONFIRMED',
-              type: 'LONG',
-              paymentPlan: 'DAILY',
-              startDate: toDbDate(row.startDate),
-              endDate: toDbDate(row.endDate),
-              startRound: row.request.startRound,
-              roundCount: row.roundCount,
-              pricePerSlotRound: row.price,
-              totalAmount: row.totalAmount,
-              slots: { create: row.slotIds.map((slotId) => ({ slotId })) },
-            },
-          });
-          const bookingNo = bookingNoFor(booking.id, now);
-          await tx.booking.update({
-            where: { id: booking.id },
-            data: { bookingNo },
-          });
-          await tx.slotOccupancy.createMany({
-            data: expandRounds(row.request, row.schedule).flatMap((key) =>
-              row.slotIds.map((slotId) => ({
-                slotId,
-                bookingId: booking.id,
-                serviceDate: toDbDate(key.serviceDate),
-                roundIndex: key.roundIndex,
-              })),
-            ),
-          });
-          await tx.bookingDay.createMany({
-            data: dates.map((date) => ({
-              bookingId: booking.id,
-              serviceDate: toDbDate(date),
-              amount: row.totalAmount / dates.length,
-              // เที่ยงคืนก่อนวันใช้งาน
-              dueAt: bangkokInstant(date, 0),
-            })),
-          });
-          created.push(bookingNo);
-        }
-        return created;
-      });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === 'P2002'
-      ) {
+    const catalog = await this.layout.catalog();
+    const bookingNos = await this.prisma.$transaction(async (tx) => {
+      // ล็อกแถวช่องทั้งหมดในไฟล์ (เรียงตามรหัส) แล้วตรวจซ้อนอีกครั้งก่อนบันทึก
+      const slotIds = [...new Set(rows.flatMap((row) => row.slotIds))].sort(
+        (a, b) => a - b,
+      );
+      for (const slotId of slotIds) {
+        await tx.$queryRaw`SELECT ParkingSlotID FROM ParkingSlot WITH (UPDLOCK, ROWLOCK) WHERE ParkingSlotID = ${slotId}`;
+      }
+      if (await this.anyTaken(tx, rows)) {
         throw new ApiException(
           HttpStatus.CONFLICT,
           'BOOKING_SLOT_TAKEN',
           'One or more slots were just booked by someone else',
         );
       }
-      throw error;
-    }
+      const created: string[] = [];
+      for (const row of rows) {
+        const dates = serviceDates(row.request);
+        const bookingNo = await nextDocumentNo(tx, 'BK', user.id, now);
+        await tx.bookingHeader.create({
+          data: {
+            bookingNo,
+            bookingDate: now,
+            bookingCusId: row.customerId as string,
+            bookingChannel: CHANNEL_IMPORT,
+            bookingType: BOOKING_TYPE_CODE.LONG,
+            paymentType: PAYMENT_TYPE_CODE.DAILY,
+            paymentStatus: PAY_WAITING,
+            bookingStatus: BOOKING_ACTIVE,
+            totalAmount: row.totalAmount,
+            createdBy: user.id,
+            createdDate: now,
+          },
+        });
+        await tx.bookingDetail.createMany({
+          data: expandRounds(row.request, row.schedule).flatMap((key) =>
+            row.slotRows.map((slot) => {
+              const roundId = catalog.roundIdOf(
+                key.serviceDate,
+                key.roundIndex,
+              );
+              if (roundId === null) {
+                throw new ApiException(
+                  HttpStatus.UNPROCESSABLE_ENTITY,
+                  'BOOKING_SLOT_NOT_BOOKABLE',
+                  'One or more slots have no layout or rounds on these dates',
+                );
+              }
+              return {
+                bookingNo,
+                usageDate: toDbDate(key.serviceDate),
+                parkingSlotId: BigInt(slot.id),
+                roundId,
+                amount: row.price,
+              };
+            }),
+          ),
+        });
+        await this.bookings.createSchedules(tx, {
+          bookingNo,
+          dates,
+          dailyAmount: row.totalAmount / dates.length,
+          // เที่ยงคืนก่อนวันใช้งาน
+          dueAt: (date) => bangkokInstant(date, 0),
+          payNowDates: [],
+          paymentId: null,
+          actor: user.id,
+        });
+        created.push(bookingNo);
+      }
+      return created;
+    });
 
     await this.audit.record({
-      userId: user.id,
+      actor: user.id,
       action: 'BOOKING_IMPORT',
       entity: 'booking',
       detail: {
@@ -203,20 +221,25 @@ export class BookingImportService {
   }
 
   // Screen Design "รายการที่นำเข้า": ไฟล์ที่นำเข้าแล้ว ใคร เมื่อไร กี่รายการ และเลขที่การจองที่สร้าง
-  // อ่านจาก audit log ของการนำเข้า (บันทึกทุกครั้งที่นำเข้าสำเร็จ) จึงไม่ต้องมีตารางเพิ่ม
+  // [รอ] ImportFile / ImportDetailLog ยังไม่มีคอลัมน์ — อ่านจาก AuditLog ของการนำเข้าไปก่อน
   async history(): Promise<ImportHistoryItem[]> {
     const logs = await this.prisma.auditLog.findMany({
       where: { action: 'BOOKING_IMPORT' },
-      include: { user: { select: { fullName: true } } },
       orderBy: { id: 'desc' },
       take: IMPORT_HISTORY_LIMIT,
     });
+    const people = await loadPeople(
+      this.prisma,
+      logs.map((log) => log.actorCode),
+    );
     return logs.map((log) => {
-      const detail = parseImportDetail(log.detail);
+      const detail = parseImportDetail(parseAuditDetail(log.detail));
       return {
         id: log.id,
-        importedAt: log.createdAt.toISOString(),
-        importedBy: log.user?.fullName ?? null,
+        importedAt: log.createdDate.toISOString(),
+        importedBy: log.actorCode
+          ? (people.get(log.actorCode)?.name ?? log.actorCode)
+          : null,
         fileName: detail.fileName,
         count: detail.bookingNos.length,
         bookingNos: detail.bookingNos,
@@ -235,24 +258,31 @@ export class BookingImportService {
         'Import not found',
       );
     }
-    const { bookingNos } = parseImportDetail(log.detail);
-    const bookings = await this.prisma.booking.findMany({
+    const { bookingNos } = parseImportDetail(parseAuditDetail(log.detail));
+    const bookings = await this.prisma.bookingHeader.findMany({
       where: { bookingNo: { in: bookingNos } },
-      include: {
-        customer: { select: { fullName: true } },
-        slots: { select: { slot: { select: SLOT_WITH_LOT } } },
-      },
-      orderBy: { id: 'asc' },
+      include: BOOKING_INCLUDE,
+      orderBy: { bookingNo: 'asc' },
     });
-    return bookings.map((booking) => ({
-      id: booking.id,
-      bookingNo: booking.bookingNo,
-      customerName: booking.customer.fullName,
-      slots: sortedLabels(booking.slots.map((item) => item.slot)),
-      startDate: fromDbDate(booking.startDate),
-      endDate: fromDbDate(booking.endDate),
-      status: booking.status,
-    }));
+    const now = new Date();
+    const scheduleFor = await this.rounds.resolver();
+    return bookings.map((booking) => {
+      const view = toBookingView(
+        booking,
+        now,
+        todayInBangkok(now),
+        scheduleFor,
+      );
+      return {
+        id: view.id,
+        bookingNo: view.bookingNo,
+        customerName: view.customerName,
+        slots: view.slots,
+        startDate: view.startDate,
+        endDate: view.endDate,
+        status: view.status as BookingStatus,
+      };
+    });
   }
 
   private async check(csv: string, now: Date): Promise<CheckedRow[]> {
@@ -272,10 +302,11 @@ export class BookingImportService {
       this.findSlots(parsed.rows),
     ]);
     const withFine = await this.customersWithUnpaidFine(
-      [...customers.values()].map((customer) => customer.id),
+      [...customers.values()].map((customer) => customer.cusId),
     );
 
-    const scheduleFor = await this.rounds.resolver();
+    const catalog = await this.layout.catalog();
+    const scheduleFor = (date: string) => catalog.scheduleFor(date);
     const rows: CheckedRow[] = [];
     for (const row of parsed.rows) {
       const errors: string[] = [...row.errors];
@@ -292,7 +323,7 @@ export class BookingImportService {
       if (!customer && !errors.includes('IMPORT_CUSTOMER_MISSING')) {
         errors.push('IMPORT_CUSTOMER_NOT_FOUND');
       }
-      if (customer && withFine.has(customer.id)) {
+      if (customer && withFine.has(customer.cusId)) {
         errors.push('BOOKING_UNPAID_FINE');
       }
       const rowSlots = row.slotCodes.map((code) => slots.get(code));
@@ -318,23 +349,15 @@ export class BookingImportService {
         }
         // วันแรกต้องชำระภายในเที่ยงคืนก่อนวันนั้น — วันนี้ผ่านเที่ยงคืนมาแล้ว
         if (row.startDate <= today) errors.push('IMPORT_START_NOT_FUTURE');
-        // ช่องที่กันไว้บางรอบ (เช่น โลจิสติกส์) จองทับรอบนั้นไม่ได้
-        if (
-          rowSlots.some(
-            (slot) => slot && heldDuring(slot.heldRounds, request, schedule),
-          ) &&
-          !errors.includes('BOOKING_SLOT_NOT_BOOKABLE')
-        ) {
-          errors.push('BOOKING_SLOT_NOT_BOOKABLE');
-        }
       }
       const dates = shapeOk ? serviceDates(request) : [];
-      const price = shapeOk ? await this.pricing.priceFor(row.startDate) : 0;
+      const price = shapeOk ? catalog.priceFor(row.startDate) : 0;
       rows.push({
         line: row.line,
-        customerName: customer?.fullName ?? null,
-        customerId: customer?.id ?? null,
+        customerName: customer ? customerName(customer) : null,
+        customerId: customer?.cusId ?? null,
         slots: row.slotCodes,
+        slotRows: rowSlots.flatMap((slot) => (slot ? [slot.row] : [])),
         slotIds: rowSlots.flatMap((slot) => (slot ? [slot.id] : [])),
         startDate: row.startDate,
         endDate: row.endDate,
@@ -354,43 +377,53 @@ export class BookingImportService {
     return rows;
   }
 
+  // ช่อง × วัน × รอบของแถว (รวมรอบที่ล้นข้ามเที่ยงคืน — นับเป็นวันถัดไป)
+  private keysOf(row: CheckedRow): string[] {
+    return expandRounds(row.request, row.schedule).flatMap((key) =>
+      row.slotIds.map((slotId) =>
+        occupancyKey(slotId, key.serviceDate, key.roundIndex),
+      ),
+    );
+  }
+
+  private async takenKeys(
+    client: Parameters<typeof loadOccupancies>[0],
+    rows: CheckedRow[],
+  ): Promise<Set<string>> {
+    const dates = rows
+      .flatMap((row) =>
+        expandRounds(row.request, row.schedule).map((key) => key.serviceDate),
+      )
+      .sort();
+    if (dates.length === 0) return new Set();
+    const existing = await loadOccupancies(
+      client,
+      { from: dates[0], to: dates[dates.length - 1] },
+      { slotIds: [...new Set(rows.flatMap((row) => row.slotIds))] },
+    );
+    return new Set(
+      existing.map((row) =>
+        occupancyKey(row.slotId, row.serviceDate, row.roundIndex),
+      ),
+    );
+  }
+
+  private async anyTaken(
+    client: Parameters<typeof loadOccupancies>[0],
+    rows: CheckedRow[],
+  ): Promise<boolean> {
+    const taken = await this.takenKeys(client, rows);
+    return rows.some((row) => this.keysOf(row).some((key) => taken.has(key)));
+  }
+
   // ช่องที่มีคนจองไว้แล้ว และช่องที่แถวก่อนหน้าในไฟล์เดียวกันจองไปแล้ว
   private async markTakenSlots(rows: CheckedRow[]): Promise<void> {
     const ready = rows.filter((row) => row.errors.length === 0);
     if (ready.length === 0) return;
-    const roundsOf = new Map(
-      ready.map(
-        (row) => [row, expandRounds(row.request, row.schedule)] as const,
-      ),
-    );
-    const keysOf = (row: CheckedRow) =>
-      (roundsOf.get(row) ?? []).flatMap((key) =>
-        row.slotIds.map((slotId) =>
-          occupancyKey(slotId, key.serviceDate, key.roundIndex),
-        ),
-      );
-    // รวมวันของรอบที่ล้นข้ามเที่ยงคืน (นับเป็นวันบริการถัดไป)
-    const dates = [...roundsOf.values()]
-      .flatMap((keys) => keys.map((key) => key.serviceDate))
-      .sort();
-    const existing = await this.prisma.slotOccupancy.findMany({
-      where: {
-        slotId: { in: [...new Set(ready.flatMap((row) => row.slotIds))] },
-        serviceDate: {
-          gte: toDbDate(dates[0]),
-          lte: toDbDate(dates[dates.length - 1]),
-        },
-      },
-      select: { slotId: true, serviceDate: true, roundIndex: true },
-    });
-    const taken = new Set(
-      existing.map((row) =>
-        occupancyKey(row.slotId, fromDbDate(row.serviceDate), row.roundIndex),
-      ),
-    );
+    const taken = await this.takenKeys(this.prisma, ready);
     const claimed = new Set<string>();
     for (const row of ready) {
-      const keys = keysOf(row);
+      const keys = this.keysOf(row);
       if (keys.some((key) => taken.has(key))) {
         row.errors.push('BOOKING_SLOT_TAKEN');
       } else if (keys.some((key) => claimed.has(key))) {
@@ -403,25 +436,34 @@ export class BookingImportService {
 
   // ผู้ขอใช้บริการที่ลงทะเบียนแล้ว: ค้นด้วยหมายเลขบัตรแรงงาน (เสื้อเขียว) หรือเบอร์โทร (ผู้ซื้อ)
   private async findCustomers(rows: ImportRow[]) {
-    const users = await this.prisma.user.findMany({
+    const customers = await this.prisma.cRMCustomer.findMany({
       where: {
-        type: { in: CUSTOMER_TYPES },
         isActive: true,
         OR: [
           {
-            laborCardNo: {
+            laborCode: {
               in: rows.map((row) => row.laborCardNo).filter(Boolean),
             },
           },
-          { phone: { in: rows.map((row) => row.phone).filter(Boolean) } },
+          {
+            telephone: { in: rows.map((row) => row.phone).filter(Boolean) },
+          },
         ],
       },
-      select: { id: true, fullName: true, phone: true, laborCardNo: true },
+      select: {
+        cusId: true,
+        firstName: true,
+        lastName: true,
+        telephone: true,
+        laborCode: true,
+      },
     });
-    const byKey = new Map<string, (typeof users)[number]>();
-    for (const user of users) {
-      if (user.laborCardNo) byKey.set(`card:${user.laborCardNo}`, user);
-      if (user.phone) byKey.set(`phone:${user.phone}`, user);
+    const byKey = new Map<string, (typeof customers)[number]>();
+    for (const customer of customers) {
+      if (customer.laborCode) byKey.set(`card:${customer.laborCode}`, customer);
+      if (customer.telephone) {
+        byKey.set(`phone:${customer.telephone}`, customer);
+      }
     }
     return byKey;
   }
@@ -434,23 +476,18 @@ export class BookingImportService {
     const slots =
       wanted.length === 0
         ? []
-        : await this.prisma.parkingSlot.findMany({
-            where: {
-              OR: wanted.map((label) => ({
-                code: label.code,
-                lot: { code: label.lot },
-              })),
-              deletedAt: null,
-              lot: { deletedAt: null },
-            },
-            include: { lot: { select: { isOpen: true, code: true } } },
+        : await loadActiveSlots(this.prisma, {
+            OR: wanted.map((label) => ({
+              slot: label.code,
+              parking: { extra: { code: label.lot } },
+            })),
           });
     return new Map(
       slots.map((slot) => [
         labelOf(slot),
         {
           id: slot.id,
-          heldRounds: slot.heldRounds,
+          row: slot,
           // ฝ่ายบริการลูกค้าจองช่องสงวนสิทธิ์ให้ลูกค้าประจำได้ (ข้อ 5)
           bookable: isBookableBy(
             resolveStatus({
@@ -466,22 +503,23 @@ export class BookingImportService {
     );
   }
 
-  private async customersWithUnpaidFine(ids: number[]): Promise<Set<number>> {
+  private async customersWithUnpaidFine(ids: string[]): Promise<Set<string>> {
     const fines = await this.prisma.fine.findMany({
-      where: { customerId: { in: ids }, NOT: { payment: { status: 'PAID' } } },
-      select: { customerId: true },
+      where: { cusId: { in: ids }, NOT: { payment: { status: 'PAID' } } },
+      select: { cusId: true },
     });
     return new Set(
-      fines.flatMap((fine) =>
-        fine.customerId === null ? [] : [fine.customerId],
-      ),
+      fines.flatMap((fine) => (fine.cusId === null ? [] : [fine.cusId])),
     );
   }
 }
 
 function customerOf(
   row: ImportRow,
-  customers: Map<string, { id: number; fullName: string }>,
+  customers: Map<
+    string,
+    { cusId: string; firstName: string | null; lastName: string | null }
+  >,
 ) {
   return row.laborCardNo
     ? customers.get(`card:${row.laborCardNo}`)

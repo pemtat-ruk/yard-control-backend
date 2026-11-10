@@ -13,7 +13,6 @@ import {
   MaxLength,
   Min,
 } from 'class-validator';
-import { Type } from 'class-transformer';
 import { DATE_PATTERN } from '../../../common/service-date.js';
 import type { PaymentPlan } from '../../payment/domain/schedule.js';
 
@@ -21,6 +20,9 @@ const PAYMENT_PLANS: PaymentPlan[] = ['FULL', 'DAILY'];
 const MAX_SLOTS_PER_BOOKING = 50;
 const MAX_DAYS_PER_PAYMENT = 366;
 const SEARCH_MAX_LENGTH = 50;
+
+const CUS_ID_MAX_LENGTH = 6;
+export const BOOKING_NO_MAX_LENGTH = 14;
 
 export class CreateBookingDto {
   @ApiProperty({ example: '2026-09-01', description: 'วันบริการแรก' })
@@ -67,11 +69,12 @@ export class CreateBookingDto {
   plan: PaymentPlan;
 
   @ApiPropertyOptional({
-    description: 'ฝ่ายบริการลูกค้าจองแทน: id ของผู้ขอใช้บริการ',
+    description: 'ฝ่ายบริการลูกค้าจองแทน: รหัสผู้ขอใช้บริการ (CusId)',
   })
   @IsOptional()
-  @IsInt()
-  customerId?: number;
+  @IsString()
+  @MaxLength(CUS_ID_MAX_LENGTH)
+  customerId?: string;
 
   @ApiPropertyOptional({
     description:
@@ -115,11 +118,10 @@ export class ListBookingsQueryDto extends SearchQueryDto {
 
   @ApiPropertyOptional({
     description:
-      'โหลดต่อ (scope ALL): เฉพาะการจองที่ id น้อยกว่านี้ — ส่ง id ของรายการสุดท้ายที่มีอยู่',
+      'โหลดต่อ (scope ALL): เฉพาะการจองที่เลขที่น้อยกว่านี้ — ส่งเลขที่ของรายการสุดท้ายที่มีอยู่',
   })
   @IsOptional()
-  @Type(() => Number)
-  @IsInt()
-  @Min(1)
-  before?: number;
+  @IsString()
+  @MaxLength(BOOKING_NO_MAX_LENGTH)
+  before?: string;
 }

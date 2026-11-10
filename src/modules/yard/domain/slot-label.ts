@@ -30,8 +30,21 @@ export function sortedLabels(slots: SlotWithLot[]): string[] {
   return slots.map(labelOf).sort(compareSlotLabels);
 }
 
-// select ของ Prisma ที่ได้ข้อมูลพอสร้างรหัสเต็ม
+// select ของ Prisma (ParkingSlot) ที่ได้ข้อมูลพอสร้างรหัสเต็ม — รหัสลานอยู่ใน ParkingExtra
 export const SLOT_WITH_LOT = {
-  code: true,
-  lot: { select: { code: true } },
+  slot: true,
+  parking: { select: { extra: { select: { code: true } } } },
 } as const;
+
+export type DbSlotWithLot = {
+  slot: string;
+  parking: { extra: { code: string } | null };
+};
+
+export function dbSlotLabel(slot: DbSlotWithLot): string {
+  return slotLabel(slot.parking.extra?.code ?? '', slot.slot);
+}
+
+export function sortedDbLabels(slots: DbSlotWithLot[]): string[] {
+  return [...new Set(slots.map(dbSlotLabel))].sort(compareSlotLabels);
+}

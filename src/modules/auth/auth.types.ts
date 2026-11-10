@@ -3,7 +3,8 @@ import type { Department, Permission, UserType } from './domain/permissions.js';
 
 // ผู้ใช้ที่ login อยู่ — guard ใส่ไว้ใน request.user และส่งให้หน้าเว็บผ่าน GET /auth/me
 export type AuthUser = {
-  id: number;
+  // รหัสผู้ใช้: พนักงาน = EmpCode, ผู้ขอใช้บริการ = CusId (ใช้เป็น CreatedBy / UpdatedBy ในตาราง)
+  id: string;
   name: string;
   type: UserType;
   department: Department | null;

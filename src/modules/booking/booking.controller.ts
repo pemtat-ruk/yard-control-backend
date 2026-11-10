@@ -5,7 +5,6 @@ import {
   HttpCode,
   HttpStatus,
   Param,
-  ParseIntPipe,
   Post,
   Query,
 } from '@nestjs/common';
@@ -90,7 +89,7 @@ export class BookingController {
   @ApiOperation({ summary: 'รายละเอียดการจอง ตั๋ว และใบเสร็จ' })
   get(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id') id: string,
   ): Promise<BookingView> {
     return this.bookingService.get(user, id);
   }
@@ -100,7 +99,7 @@ export class BookingController {
   @ApiOperation({ summary: 'ชำระค่าบริการรายวันของการจองแบบวันต่อวัน' })
   payDays(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseIntPipe) id: number,
+    @Param('id') id: string,
     @Body() dto: PayDaysDto,
   ): Promise<BookingView> {
     return this.bookingService.payDays(user, id, dto);

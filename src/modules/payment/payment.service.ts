@@ -1,14 +1,20 @@
 import { randomInt } from 'node:crypto';
 import { HttpStatus, Injectable } from '@nestjs/common';
-import type { Payment, PaymentPurpose, Prisma } from '@prisma/client';
+import type { PaymentTransaction, Prisma } from '@prisma/client';
 import { ApiException } from '../../common/api-exception.js';
-import { fromDbDate } from '../../common/service-date.js';
 import { env } from '../../config/env.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import type { AuthUser } from '../auth/auth.types.js';
+import {
+  BOOKING_ACTIVE,
+  PAY_PAID,
+  PAY_WAITING,
+} from '../booking/domain/booking-status.js';
+import { snapshotBooking } from '../booking/booking-history.js';
 import { SettingsService } from '../settings/settings.service.js';
 import { PaymentGateway } from './payment-gateway.js';
 import { EventsService } from '../events/events.service.js';
+import type { PaymentPurpose, PaymentStatus } from './domain/payment-kind.js';
 import { vatIncluded } from './domain/vat.js';
 
 export type PaymentView = {
@@ -16,11 +22,11 @@ export type PaymentView = {
   transactionNo: string;
   purpose: PaymentPurpose;
   amount: number;
-  status: Payment['status'];
+  status: PaymentStatus;
   qrPayload: string | null;
   expiresAt: string;
   paidAt: string | null;
-  bookingId: number | null;
+  bookingId: string | null; // BookingNo
   receiptNo: string | null;
   // true = ระบบใช้ Payment Gateway จำลอง หน้าเว็บแสดงปุ่มจำลองการชำระได้
   mock: boolean;
@@ -31,7 +37,6 @@ type Tx = Prisma.TransactionClient;
 const RANDOM_SUFFIX_LIMIT = 10_000;
 const RANDOM_SUFFIX_DIGITS = 4;
 const RECEIPT_NO_DIGITS = 8;
-const TICKET_BOOKING_DIGITS = 6;
 
 function notFound(): ApiException {
   return new ApiException(
@@ -41,6 +46,7 @@ function notFound(): ApiException {
   );
 }
 
+// [เรา] ธุรกรรม QR และใบเสร็จ — รอ spec Payment Gateway
 @Injectable()
 export class PaymentService {
   constructor(
@@ -65,12 +71,12 @@ export class PaymentService {
     tx: Tx,
     input: {
       purpose: PaymentPurpose;
-      bookingId?: number;
+      bookingNo?: string;
       amount: number;
       expiresAt: Date;
     },
     now: Date,
-  ): Promise<Payment> {
+  ): Promise<PaymentTransaction> {
     const { transactionPrefix } = await this.settings.current();
     const transactionNo = this.newTransactionNo(transactionPrefix, now);
     const qr = await this.gateway.createQr({
@@ -78,11 +84,11 @@ export class PaymentService {
       amount: input.amount,
       expiresAt: input.expiresAt,
     });
-    return tx.payment.create({
+    return tx.paymentTransaction.create({
       data: {
         transactionNo,
         purpose: input.purpose,
-        bookingId: input.bookingId,
+        bookingNo: input.bookingNo,
         amount: input.amount,
         expiresAt: input.expiresAt,
         qrPayload: qr.qrPayload,
@@ -92,26 +98,27 @@ export class PaymentService {
   }
 
   async getView(user: AuthUser, id: number): Promise<PaymentView> {
-    const payment = await this.prisma.payment.findUnique({
+    const payment = await this.prisma.paymentTransaction.findUnique({
       where: { id },
       include: { booking: true, fine: true, receipt: true },
     });
     if (!payment) throw notFound();
     // ผู้ขอใช้บริการดูได้เฉพาะรายการของตนเอง; ตอบ 404 เหมือนไม่มีรายการ ไม่บอกว่ามีอยู่จริง
-    const ownerId = payment.booking?.customerId ?? payment.fine?.customerId;
+    const ownerId = payment.booking?.bookingCusId ?? payment.fine?.cusId;
     if (user.type !== 'EMPLOYEE' && ownerId !== user.id) throw notFound();
 
     return {
       id: payment.id,
       transactionNo: payment.transactionNo,
-      purpose: payment.purpose,
+      // CHECK constraint ของตารางคุมค่าทั้งสองคอลัมน์ไว้แล้ว
+      purpose: payment.purpose as PaymentPurpose,
       amount: Number(payment.amount),
-      status: payment.status,
+      status: payment.status as PaymentStatus,
       // QR ใช้ได้เฉพาะตอนรอชำระ
       qrPayload: payment.status === 'PENDING' ? payment.qrPayload : null,
       expiresAt: payment.expiresAt.toISOString(),
       paidAt: payment.paidAt?.toISOString() ?? null,
-      bookingId: payment.bookingId,
+      bookingId: payment.bookingNo,
       receiptNo: payment.receipt?.receiptNo ?? null,
       mock: env.paymentGatewayMode === 'mock',
     };
@@ -125,25 +132,25 @@ export class PaymentService {
     return this.getView(user, id);
   }
 
-  // บันทึกว่าชำระสำเร็จ: ออกใบเสร็จ ยืนยันการจอง และออกตั๋วของวันที่ชำระแล้ว
+  // บันทึกว่าชำระสำเร็จ: ออกใบเสร็จ ปิดงวดที่ชำระ และยืนยันการจอง (ตั๋วของวันที่ชำระแล้วคิดจากงวดที่ชำระ)
   // เรียกซ้ำได้ — รายการที่ชำระไปแล้วจะไม่ถูกประมวลซ้ำ
   async settle(id: number, now: Date = new Date()): Promise<void> {
     // ผู้เกี่ยวข้องกับรายการที่เพิ่งชำระสำเร็จ (null = ไม่มีอะไรเปลี่ยน) — แจ้งหน้าเว็บหลัง transaction สำเร็จ
-    let notify: number[] | null = null;
+    let notify: string[] | null = null;
     await this.prisma.$transaction(async (tx) => {
-      const payment = await tx.payment.findUnique({
+      const payment = await tx.paymentTransaction.findUnique({
         where: { id },
         include: {
-          bookingDays: true,
-          booking: { select: { customerId: true, createdById: true } },
-          fine: { select: { customerId: true, issuedById: true } },
+          schedules: true,
+          booking: { select: { bookingCusId: true, createdBy: true } },
+          fine: { select: { cusId: true, issuedBy: true } },
         },
       });
       if (!payment) throw notFound();
       if (payment.status === 'PAID') return;
-      // QR ค่าจองที่ไม่มีวันผูกอยู่แล้ว = ถูก QR ใหม่แทน (วันเหล่านั้นอาจชำระด้วย QR อื่นไปแล้ว) ห้ามรับเงินซ้ำ
+      // QR ค่าจองที่ไม่มีงวดผูกอยู่แล้ว = ถูก QR ใหม่แทน (งวดเหล่านั้นอาจชำระด้วย QR อื่นไปแล้ว) ห้ามรับเงินซ้ำ
       const superseded =
-        payment.purpose === 'BOOKING' && payment.bookingDays.length === 0;
+        payment.purpose === 'BOOKING' && payment.schedules.length === 0;
       if (
         payment.status !== 'PENDING' ||
         payment.expiresAt <= now ||
@@ -157,17 +164,17 @@ export class PaymentService {
       }
 
       // เงื่อนไข status ใน where กันสองคำขอพร้อมกันประมวลรายการเดียวกันซ้ำ
-      const updated = await tx.payment.updateMany({
+      const updated = await tx.paymentTransaction.updateMany({
         where: { id, status: 'PENDING' },
         data: { status: 'PAID', paidAt: now },
       });
       if (updated.count === 0) return;
       notify = [
-        payment.booking?.customerId,
-        payment.booking?.createdById,
-        payment.fine?.customerId,
-        payment.fine?.issuedById,
-      ].filter((userId): userId is number => typeof userId === 'number');
+        payment.booking?.bookingCusId,
+        payment.booking?.createdBy,
+        payment.fine?.cusId,
+        payment.fine?.issuedBy,
+      ].filter((code): code is string => typeof code === 'string');
 
       // ใบกำกับภาษีอย่างย่อ: บันทึกภาษี ณ วันที่ออก ไม่คำนวณใหม่ตอนเปิดดู
       const vat = vatIncluded(Number(payment.amount));
@@ -180,28 +187,31 @@ export class PaymentService {
           vatAmount: vat.vat,
         },
       });
-      if (payment.bookingId === null) return;
+      if (payment.bookingNo === null) return;
 
-      const bookingId = payment.bookingId;
-      await tx.bookingDay.updateMany({
-        where: { paymentId: id },
-        data: { paidAt: now },
+      // เก็บประวัติใบจองก่อนเปลี่ยนสถานะงวด/ใบจองเป็นชำระแล้ว
+      await snapshotBooking(tx, payment.bookingNo);
+      await tx.paymentSchedule.updateMany({
+        where: {
+          payScheduleId: {
+            in: payment.schedules.map((item) => item.payScheduleId),
+          },
+        },
+        data: {
+          paymentStatus: PAY_PAID,
+          paidAt: now,
+          updatedBy: payment.booking?.bookingCusId,
+          updatedDate: now,
+        },
       });
-      await tx.booking.updateMany({
-        where: { id: bookingId, status: 'PENDING_PAYMENT' },
-        data: { status: 'CONFIRMED' },
-      });
-      const bookingPart = String(bookingId).padStart(
-        TICKET_BOOKING_DIGITS,
-        '0',
-      );
-      await tx.ticket.createMany({
-        data: payment.bookingDays.map((day) => ({
-          bookingId,
-          serviceDate: day.serviceDate,
-          ticketNo: `TK${bookingPart}${fromDbDate(day.serviceDate).replaceAll('-', '')}`,
-        })),
-        skipDuplicates: true,
+      // งวดแรกชำระแล้ว = การจองยืนยัน (PaymentStatus ของใบจอง W → P)
+      await tx.bookingHeader.updateMany({
+        where: {
+          bookingNo: payment.bookingNo,
+          bookingStatus: BOOKING_ACTIVE,
+          paymentStatus: PAY_WAITING,
+        },
+        data: { paymentStatus: PAY_PAID, paidAt: now, updatedDate: now },
       });
     });
     if (notify) {

@@ -7,6 +7,7 @@ import {
   ReportService,
   type BookingReport,
   type Dashboard,
+  type PaymentItems,
   type PaymentReport,
 } from './report.service.js';
 
@@ -20,6 +21,14 @@ export class ReportController {
   @ApiOperation({ summary: 'สรุปยอดชำระค่าบริการและค่าปรับตามช่วงวันเวลา' })
   payments(@Query() query: PaymentReportQueryDto): Promise<PaymentReport> {
     return this.reportService.paymentSummary(query);
+  }
+
+  @Get('payments/items')
+  @ApiOperation({
+    summary: 'รายการชำระสำเร็จทีละรายการในช่วงวันเวลา (ตรวจยอดปิดวัน)',
+  })
+  paymentItems(@Query() query: PaymentReportQueryDto): Promise<PaymentItems> {
+    return this.reportService.paymentItems(query);
   }
 
   @Get('bookings')

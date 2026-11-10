@@ -1,16 +1,19 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsIn,
   IsInt,
   IsNotEmpty,
+  IsObject,
   IsOptional,
   IsString,
   Matches,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import { DATE_PATTERN } from '../../../common/service-date.js';
 import type { SlotBaseStatus } from '../domain/slot-status.js';
@@ -18,8 +21,11 @@ import type { SlotBaseStatus } from '../domain/slot-status.js';
 const BASE_STATUSES: SlotBaseStatus[] = ['OPEN', 'RESERVED', 'CLOSED'];
 const INSPECTION_RESULTS = ['VACATED', 'STILL_PARKED'] as const;
 const CODE_MAX_LENGTH = 20;
+// ช่องใหม่ต่อการบันทึกผังหนึ่งครั้ง (ลานจริงใหญ่สุด 112 ช่อง)
+const NEW_SLOTS_MAX = 200;
 const NAME_MAX_LENGTH = 255;
 const REASON_MAX_LENGTH = 500;
+const BOOKING_NO_MAX_LENGTH = 14;
 // รหัสช่องจอด: ตัวอักษร ตัวเลข ขีด และ / (ลานจริงใช้แบบ "14/7" = บล็อก 14 ช่อง 7)
 const CODE_PATTERN = /^[A-Za-z0-9/-]+$/;
 // รหัสลานไม่มีขีด เพราะขีดเป็นตัวคั่นลานกับช่องในรหัสเต็ม ("P5-12" — ดู slot-label.ts)
@@ -101,6 +107,45 @@ export class UpdateLotDto {
   isOpen?: boolean;
 }
 
+// ผังของลาน: { rows: [...] } ตาม LotLayout — ตรวจรายละเอียดใน domain/layout-input.ts; null = ใช้ผังตั้งต้น
+export class UpdateLotLayoutDto {
+  @ApiProperty({
+    nullable: true,
+    example: {
+      rows: [
+        { kind: 'slots', facing: 'UP', cells: [{ slot: '1' }] },
+        { kind: 'aisle', label: 'ทางรถ' },
+      ],
+    },
+  })
+  @ValidateIf((_, value) => value !== null)
+  @IsObject()
+  layout: Record<string, unknown> | null;
+
+  @ApiPropertyOptional({
+    example: ['69', '70'],
+    description: 'ช่องใหม่ที่สร้างพร้อมบันทึกผัง',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(NEW_SLOTS_MAX)
+  @Matches(CODE_PATTERN, { each: true })
+  @MaxLength(CODE_MAX_LENGTH, { each: true })
+  newSlots?: string[];
+
+  @ApiPropertyOptional({
+    example: ['12'],
+    description:
+      'ช่องที่ลบพร้อมบันทึกผัง — ช่องที่มีการจองค้างอยู่ลบไม่ได้ (SLOT_HAS_BOOKINGS, details = เลขช่อง)',
+  })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(NEW_SLOTS_MAX)
+  @Matches(CODE_PATTERN, { each: true })
+  @MaxLength(CODE_MAX_LENGTH, { each: true })
+  deletedSlots?: string[];
+}
+
 export class CreateSlotDto {
   @ApiProperty()
   @IsInt()
@@ -110,15 +155,6 @@ export class CreateSlotDto {
   @Matches(CODE_PATTERN)
   @MaxLength(CODE_MAX_LENGTH)
   code: string;
-}
-
-// รอบของทุกวันที่กันช่องไว้ (เช่น โลจิสติกส์) — ลำดับรอบในวัน เริ่มที่ 0; [] = ไม่กัน
-export class UpdateSlotHeldDto {
-  @ApiProperty({ example: [0, 4, 5], type: [Number] })
-  @IsArray()
-  @IsInt({ each: true })
-  @Min(0, { each: true })
-  heldRounds: number[];
 }
 
 export class UpdateSlotStatusDto {
@@ -138,9 +174,10 @@ export class RecordInspectionDto {
   @IsInt()
   slotId: number;
 
-  @ApiProperty()
-  @IsInt()
-  bookingId: number;
+  @ApiProperty({ example: 'BK2026-11-0001', description: 'เลขที่ใบจอง' })
+  @IsString()
+  @MaxLength(BOOKING_NO_MAX_LENGTH)
+  bookingId: string;
 
   @ApiProperty({ example: '2026-09-01', description: 'วันบริการที่ตรวจ' })
   @Matches(DATE_PATTERN)

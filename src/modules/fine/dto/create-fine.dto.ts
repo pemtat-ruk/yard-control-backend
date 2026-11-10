@@ -1,9 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
-  ArrayMaxSize,
-  ArrayMinSize,
-  ArrayUnique,
-  IsArray,
   IsBoolean,
   IsInt,
   IsOptional,
@@ -14,23 +10,19 @@ import {
 import { Transform, Type } from 'class-transformer';
 
 const NOTE_MAX_LENGTH = 300;
-// การจองหนึ่งรายการมีช่องไม่เกินจำนวนนี้ในทางปฏิบัติ — กันรายการยาวผิดปกติ
-const MAX_SLOTS = 50;
+const SEARCH_MAX_LENGTH = 50;
 
 // ข้อ 5: ค่าปรับจอดเกินเวลา — ยอดเงินคำนวณที่ระบบจากเวลาที่เกิน (ไม่รับยอดจากผู้ตรวจสอบ)
-// ปรับได้หลายช่องของการจองเดียวกันในใบเดียว (Screen Design หน้า 16)
+// ค่าปรับ 1 ใบต่อ 1 ช่อง ตาม Data Dictionary (SA ยืนยัน 10 พ.ย. 2569)
 export class FineTargetDto {
-  @ApiProperty({ description: 'การจองที่จอดเกินเวลา' })
-  @IsInt()
-  bookingId: number;
+  @ApiProperty({ example: 'BK2026-11-0001', description: 'เลขที่ใบจอง' })
+  @IsString()
+  @MaxLength(14)
+  bookingId: string;
 
-  @ApiProperty({ description: 'ช่องที่จอดเกิน (ของการจองนี้)', type: [Number] })
-  @IsArray()
-  @ArrayMinSize(1)
-  @ArrayMaxSize(MAX_SLOTS)
-  @ArrayUnique()
-  @IsInt({ each: true })
-  slotIds: number[];
+  @ApiProperty({ description: 'ช่องที่จอดเกิน (ของการจองนี้)' })
+  @IsInt()
+  slotId: number;
 }
 
 export class CreateFineDto extends FineTargetDto {
@@ -59,4 +51,12 @@ export class ListFinesQueryDto {
   )
   @IsBoolean()
   unpaid?: boolean;
+
+  @ApiPropertyOptional({
+    description: 'ค้นจากเลขที่ค่าปรับหรือเลขที่การจอง (แผงค้นหา Ctrl+K)',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(SEARCH_MAX_LENGTH)
+  q?: string;
 }

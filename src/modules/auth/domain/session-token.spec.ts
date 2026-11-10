@@ -3,10 +3,10 @@ import { createSessionToken, verifySessionToken } from './session-token.js';
 describe('session token', () => {
   const secret = 'a-test-secret-that-is-long-enough-123';
   const now = new Date('2026-10-09T03:00:00Z');
-  const token = createSessionToken(42, secret, 8, now);
+  const token = createSessionToken('E:IT001', secret, 8, now);
 
-  it('returns the user id while the token is valid', () => {
-    expect(verifySessionToken(token, secret, now)).toBe(42);
+  it('returns the subject while the token is valid', () => {
+    expect(verifySessionToken(token, secret, now)).toBe('E:IT001');
   });
 
   it('rejects a token after it expires', () => {
@@ -18,7 +18,7 @@ describe('session token', () => {
     expect(verifySessionToken(token, `${secret}x`, now)).toBeNull();
     const [, signature] = token.split('.');
     const forged = Buffer.from(
-      JSON.stringify({ userId: 1, expiresAt: now.getTime() + 1000 }),
+      JSON.stringify({ subject: 'E:CS001', expiresAt: now.getTime() + 1000 }),
     ).toString('base64url');
     expect(
       verifySessionToken(`${forged}.${signature}`, secret, now),

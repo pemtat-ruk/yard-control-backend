@@ -1,13 +1,29 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
-import type { Permission as DbPermission, User } from '@prisma/client';
+import type { CRMCustomer } from '@prisma/client';
 import { ApiException } from '../../common/api-exception.js';
 import { env } from '../../config/env.js';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { AuditService } from '../audit/audit.service.js';
 import { CrmClient } from '../crm/crm.client.js';
 import type { AuthUser } from './auth.types.js';
+import {
+  customerName,
+  cusTypeOf,
+  formatSubject,
+  nextCusId,
+  parseSubject,
+  splitName,
+  userTypeOf,
+} from './domain/customer.js';
 import { afterFailedLogin, isLocked } from './domain/login-lockout.js';
+import {
+  CUSTOMER_PERMISSIONS,
+  isPermission,
+  type Permission,
+  type UserType,
+} from './domain/permissions.js';
 import { verifyPassword } from './domain/password.js';
+import { departmentOfRoles } from './domain/roles.js';
 import {
   createSessionToken,
   verifySessionToken,
@@ -20,30 +36,32 @@ import type {
 
 // ผู้ขอใช้บริการที่ฝ่ายบริการลูกค้าจองแทนได้ (รูปเดียวกับผลค้นหาใน GET /bookings/customers)
 export type VerifiedCustomer = {
-  id: number;
+  id: string;
   name: string;
   phone: string | null;
-  userType: User['type'];
+  userType: UserType;
 };
 
 export const SESSION_COOKIE = 'ycs_session';
 
-type UserWithPermissions = User & {
-  permissions: { permission: DbPermission }[];
-};
+// สถานะพนักงานใน vwEmployee_List ที่ถือว่าลาออก/พักงาน — [รอ] ค่าจริงจากระบบพนักงานของบริษัท
+const INACTIVE_EMP_STATUS = ['I', 'INACTIVE', 'RESIGN'];
 
-const WITH_PERMISSIONS = { permissions: { select: { permission: true } } };
+export function isEmployeeActive(empStatus: string | null): boolean {
+  return !INACTIVE_EMP_STATUS.includes((empStatus ?? '').toUpperCase());
+}
 
-function toAuthUser(user: UserWithPermissions): AuthUser {
+export function toCustomerUser(customer: CRMCustomer): AuthUser {
+  const type = userTypeOf(customer.cusType);
   return {
-    id: user.id,
-    name: user.fullName,
-    type: user.type,
-    department: user.department,
-    phone: user.phone,
-    laborCardNo: user.laborCardNo,
-    employeeCode: user.employeeCode,
-    permissions: user.permissions.map((item) => item.permission),
+    id: customer.cusId,
+    name: customerName(customer),
+    type,
+    department: null,
+    phone: customer.telephone,
+    laborCardNo: type === 'GREEN_SHIRT' ? customer.laborCode : null,
+    employeeCode: null,
+    permissions: CUSTOMER_PERMISSIONS,
   };
 }
 
@@ -83,6 +101,14 @@ function notInCrm(): ApiException {
   );
 }
 
+function typeMismatch(): ApiException {
+  return new ApiException(
+    HttpStatus.CONFLICT,
+    'CUSTOMER_TYPE_MISMATCH',
+    'This phone number is registered as another customer type',
+  );
+}
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -94,138 +120,225 @@ export class AuthService {
   async login(dto: LoginDto): Promise<{ user: AuthUser; token: string }> {
     const user =
       dto.userType === 'EMPLOYEE'
-        ? await this.findEmployee(dto)
-        : await this.syncCustomerFromCrm(dto);
-    if (!user || !user.isActive) throw invalidCredentials();
+        ? await this.loginEmployee(dto)
+        : await this.loginCustomer(dto);
+    if (!user) throw invalidCredentials();
 
     await this.audit.record({
-      userId: user.id,
+      actor: user.id,
       action: 'LOGIN',
       entity: 'user',
       entityId: user.id,
     });
+    const subject = formatSubject({
+      kind: user.type === 'EMPLOYEE' ? 'EMPLOYEE' : 'CUSTOMER',
+      code: user.id,
+    });
     const token = createSessionToken(
-      user.id,
+      subject,
       env.authSecret,
       env.sessionTtlHours,
       new Date(),
     );
-    return { user: toAuthUser(user), token };
+    return { user, token };
   }
 
-  private async findEmployee(
-    dto: LoginDto,
-  ): Promise<UserWithPermissions | null> {
+  // พนักงาน: ข้อมูลจาก vwEmployee_List ของบริษัท สิทธิ์จาก Accounts_Roles
+  // [รอ] รูปแบบ Password ใน view จริง — ตอนนี้ตรวจแบบ hash ของ YCS (ใช้กับ view จำลองบนเครื่อง dev)
+  private async loginEmployee(dto: LoginDto): Promise<AuthUser | null> {
     if (!dto.employeeCode || !dto.password) return null;
-    const employee = await this.prisma.user.findUnique({
-      where: { employeeCode: dto.employeeCode.trim().toUpperCase() },
-      include: WITH_PERMISSIONS,
+    const empCode = dto.employeeCode.trim().toUpperCase();
+    const employee = await this.prisma.employeeView.findUnique({
+      where: { empCode },
     });
-    if (employee?.type !== 'EMPLOYEE') return null;
+    if (!employee) return null;
+
     const now = new Date();
-    if (isLocked(employee, now)) throw accountLocked(employee.lockedUntil);
-    // TODO: [ถาม ข้อ 3] ตอนนี้ตรวจกับรหัสผ่านที่เก็บใน YCS เอง รอคำตอบว่าต้องต่อ AD / HR หรือไม่
-    if (!verifyPassword(dto.password, employee.passwordHash)) {
-      const next = afterFailedLogin(employee, now);
-      await this.prisma.user.update({ where: { id: employee.id }, data: next });
+    const attempt = await this.prisma.loginAttempt.findUnique({
+      where: { loginKey: empCode },
+    });
+    const state = {
+      failedLogins: attempt?.failedLogins ?? 0,
+      lockedUntil: attempt?.lockedUntil ?? null,
+    };
+    if (isLocked(state, now)) throw accountLocked(state.lockedUntil);
+
+    if (!verifyPassword(dto.password, employee.password)) {
+      const next = afterFailedLogin(state, now);
+      await this.prisma.loginAttempt.upsert({
+        where: { loginKey: empCode },
+        create: { loginKey: empCode, ...next },
+        update: next,
+      });
       if (next.lockedUntil) {
         await this.audit.record({
-          userId: employee.id,
+          actor: empCode,
           action: 'ACCOUNT_LOCKED',
           entity: 'user',
-          entityId: employee.id,
+          entityId: empCode,
         });
         throw accountLocked(next.lockedUntil);
       }
       return null;
     }
-    if (employee.failedLogins > 0 || employee.lockedUntil) {
-      await this.prisma.user.update({
-        where: { id: employee.id },
+    if (attempt && (attempt.failedLogins > 0 || attempt.lockedUntil)) {
+      await this.prisma.loginAttempt.update({
+        where: { loginKey: empCode },
         data: { failedLogins: 0, lockedUntil: null },
       });
     }
-    return employee;
+    return this.loadEmployee(empCode);
   }
 
-  // Workflow ข้อ 1: ผู้ขอใช้บริการถูกตรวจกับ CRM ทุกครั้งที่เข้าสู่ระบบ
-  // ไม่พบใน CRM = เข้าไม่ได้; พบแล้วเพิ่มหรืออัปเดตข้อมูลใน YCS ให้ตรงกับ CRM
-  // TODO: [ถาม ข้อ 2] ยืนยันตัวด้วยเบอร์โทรอย่างเดียวตามเอกสาร ยังไม่มี OTP
-  private async syncCustomerFromCrm(
-    dto: LoginDto,
-  ): Promise<UserWithPermissions | null> {
+  // พนักงานที่ใช้ระบบได้ = ยังทำงานอยู่ และมีกลุ่มสิทธิ์ใน Accounts_Roles อย่างน้อย 1 กลุ่ม
+  async loadEmployee(empCode: string): Promise<AuthUser | null> {
+    const [employee, accounts] = await Promise.all([
+      this.prisma.employeeView.findUnique({ where: { empCode } }),
+      this.prisma.accounts_Roles.findMany({
+        where: { empCode, role: { isActive: true } },
+        include: {
+          role: {
+            include: {
+              permissions: {
+                where: { action: { isActive: true } },
+                include: { action: true },
+              },
+            },
+          },
+        },
+      }),
+    ]);
+    if (!employee || !isEmployeeActive(employee.empStatus)) return null;
+    if (accounts.length === 0) return null;
+
+    const permissions = new Set<Permission>();
+    for (const account of accounts) {
+      for (const item of account.role.permissions) {
+        if (isPermission(item.action.actionCode)) {
+          permissions.add(item.action.actionCode);
+        }
+      }
+    }
+    return {
+      id: employee.empCode,
+      name: employee.empName,
+      type: 'EMPLOYEE',
+      department: departmentOfRoles(
+        accounts.map((account) => account.role.roleName),
+      ),
+      phone: null,
+      laborCardNo: null,
+      employeeCode: employee.empCode,
+      permissions: [...permissions],
+    };
+  }
+
+  private async loginCustomer(dto: LoginDto): Promise<AuthUser | null> {
     const laborCardNo =
       dto.userType === 'GREEN_SHIRT' ? dto.laborCardNo?.trim() : undefined;
     if (!dto.phone || (dto.userType === 'GREEN_SHIRT' && !laborCardNo)) {
       return null;
     }
-    const crmCustomer = await this.crm.findCustomer({
-      phone: dto.phone,
+    const customer = await this.syncCustomerFromCrm(
+      dto.userType,
+      dto.phone,
       laborCardNo,
-    });
-    if (!crmCustomer) throw notInCrm();
+      null,
+    );
+    if (!customer || !customer.isActive) return null;
+    return toCustomerUser(customer);
+  }
 
-    const existing = await this.prisma.user.findUnique({
-      where: { phone: dto.phone },
-      include: WITH_PERMISSIONS,
+  // Workflow ข้อ 1: ผู้ขอใช้บริการถูกตรวจกับ CRM ทุกครั้งที่เข้าสู่ระบบ
+  // ไม่พบใน CRM = เข้าไม่ได้; พบแล้วเพิ่มหรืออัปเดต CRMCustomer ให้ตรงกับ CRM
+  // null = เบอร์นี้เปิดสิทธิ์ไว้เป็นผู้ใช้อีกประเภท — ไม่สลับประเภทให้เอง
+  // TODO: [ถาม ข้อ 2] ยืนยันตัวด้วยเบอร์โทรอย่างเดียวตามเอกสาร ยังไม่มี OTP
+  private async syncCustomerFromCrm(
+    userType: UserType,
+    phone: string,
+    laborCardNo: string | undefined,
+    actor: string | null,
+  ): Promise<CRMCustomer | null> {
+    const crmCustomer = await this.crm.findCustomer({ phone, laborCardNo });
+    if (!crmCustomer) throw notInCrm();
+    const cusType = cusTypeOf(userType);
+    const name = splitName(crmCustomer.fullName);
+
+    const existing = await this.prisma.cRMCustomer.findUnique({
+      where: { telephone: phone },
     });
     if (!existing) {
-      const created = await this.prisma.user.create({
-        data: {
-          type: dto.userType,
-          phone: dto.phone,
-          laborCardNo,
-          crmId: crmCustomer.crmId,
-          fullName: crmCustomer.fullName,
-          permissions: { create: { permission: 'BOOKING_CREATE_SELF' } },
-        },
-        include: WITH_PERMISSIONS,
+      const created = await this.createCustomer({
+        cusType,
+        telephone: phone,
+        laborCode: laborCardNo ?? null,
+        ...name,
+        createdBy: actor,
       });
       await this.audit.record({
-        userId: created.id,
+        actor: actor ?? created.cusId,
         action: 'REGISTER',
-        entity: 'user',
-        entityId: created.id,
+        entity: 'customer',
+        entityId: created.cusId,
       });
       return created;
     }
-    // เบอร์นี้เปิดสิทธิ์ไว้เป็นผู้ใช้อีกประเภท — ไม่สลับประเภทให้เอง
-    if (existing.type !== dto.userType) return null;
+    if (existing.cusType !== cusType) return null;
 
     const upToDate =
-      existing.crmId === crmCustomer.crmId &&
-      existing.fullName === crmCustomer.fullName &&
-      (existing.laborCardNo ?? undefined) === laborCardNo;
+      existing.firstName === name.firstName &&
+      existing.lastName === name.lastName &&
+      (existing.laborCode ?? undefined) === laborCardNo;
     if (upToDate) return existing;
-    return this.prisma.user.update({
+    return this.prisma.cRMCustomer.update({
       where: { id: existing.id },
       data: {
-        crmId: crmCustomer.crmId,
-        fullName: crmCustomer.fullName,
-        laborCardNo: laborCardNo ?? null,
+        ...name,
+        laborCode: laborCardNo ?? null,
+        updatedBy: actor ?? existing.cusId,
+        updatedDate: new Date(),
       },
-      include: WITH_PERMISSIONS,
+    });
+  }
+
+  // CusId รันต่อจากรหัสล่าสุด (C00001) — ล็อกแถวล่าสุดไว้ กันสองคำขอได้รหัสเดียวกัน
+  private createCustomer(data: {
+    cusType: string;
+    telephone: string;
+    laborCode: string | null;
+    firstName: string;
+    lastName: string | null;
+    createdBy: string | null;
+  }): Promise<CRMCustomer> {
+    return this.prisma.$transaction(async (tx) => {
+      const [last] = await tx.$queryRaw<{ CusId: string }[]>`
+        SELECT TOP 1 CusId FROM CRMCustomer WITH (UPDLOCK, HOLDLOCK)
+        ORDER BY CusId DESC`;
+      const cusId = nextCusId(last?.CusId ?? null);
+      return tx.cRMCustomer.create({
+        data: { ...data, cusId, createdBy: data.createdBy ?? cusId },
+      });
     });
   }
 
   // Workflow ข้อ 3 / Screen Design "จองแทน": ฝ่ายบริการลูกค้ากด "ตรวจสอบข้อมูล" ด้วยประเภทลูกค้า + บัตรแรงงาน/เบอร์โทร
-  // ตรวจกับ CRM แบบเดียวกับตอนลูกค้าเข้าสู่ระบบ — พบแล้วเพิ่ม/อัปเดตใน YCS ให้ จองแทนได้แม้ลูกค้าไม่เคยเข้าสู่ระบบ
+  // ตรวจกับ CRM แบบเดียวกับตอนลูกค้าเข้าสู่ระบบ — พบแล้วเพิ่ม/อัปเดตให้ จองแทนได้แม้ลูกค้าไม่เคยเข้าสู่ระบบ
   async verifyCustomer(
     actor: AuthUser,
     dto: VerifyCustomerDto,
   ): Promise<VerifiedCustomer> {
-    if (dto.userType === 'GREEN_SHIRT' && !dto.laborCardNo?.trim()) {
+    const laborCardNo = dto.laborCardNo?.trim();
+    if (dto.userType === 'GREEN_SHIRT' && !laborCardNo) {
       throw laborCardRequired();
     }
-    const customer = await this.syncCustomerFromCrm(dto);
+    const customer = await this.syncCustomerFromCrm(
+      dto.userType,
+      dto.phone,
+      dto.userType === 'GREEN_SHIRT' ? laborCardNo : undefined,
+      actor.id,
+    );
     // เบอร์นี้เปิดสิทธิ์ไว้เป็นผู้ใช้อีกประเภท — ให้เจ้าหน้าที่เลือกประเภทให้ถูก ไม่สลับให้เอง
-    if (!customer) {
-      throw new ApiException(
-        HttpStatus.CONFLICT,
-        'CUSTOMER_TYPE_MISMATCH',
-        'This phone number is registered as another customer type',
-      );
-    }
+    if (!customer) throw typeMismatch();
     if (!customer.isActive) {
       throw new ApiException(
         HttpStatus.UNPROCESSABLE_ENTITY,
@@ -234,16 +347,16 @@ export class AuthService {
       );
     }
     await this.audit.record({
-      userId: actor.id,
+      actor: actor.id,
       action: 'CUSTOMER_VERIFY',
-      entity: 'user',
-      entityId: customer.id,
+      entity: 'customer',
+      entityId: customer.cusId,
     });
     return {
-      id: customer.id,
-      name: customer.fullName,
-      phone: customer.phone,
-      userType: customer.type,
+      id: customer.cusId,
+      name: customerName(customer),
+      phone: customer.telephone,
+      userType: userTypeOf(customer.cusType),
     };
   }
 
@@ -254,22 +367,18 @@ export class AuthService {
     if (dto.userType === 'GREEN_SHIRT' && !laborCardNo) {
       throw laborCardRequired();
     }
-
     const crmCustomer = await this.crm.findCustomer({
       phone: dto.phone,
       laborCardNo,
     });
     if (!crmCustomer) throw notInCrm();
-    const existing = await this.prisma.user.findFirst({
-      where: { OR: [{ phone: dto.phone }, { crmId: crmCustomer.crmId }] },
+
+    const existing = await this.prisma.cRMCustomer.findUnique({
+      where: { telephone: dto.phone },
     });
     // เปิดสิทธิ์ไว้เป็นอีกประเภท: บอกให้เลือกประเภทให้ถูก — "ลงทะเบียนแล้ว เข้าสู่ระบบได้เลย" จะพาไปเข้าแท็บเดิมแล้วเข้าไม่ได้
-    if (existing && existing.type !== dto.userType) {
-      throw new ApiException(
-        HttpStatus.CONFLICT,
-        'CUSTOMER_TYPE_MISMATCH',
-        'This phone number is registered as another customer type',
-      );
+    if (existing && existing.cusType !== cusTypeOf(dto.userType)) {
+      throw typeMismatch();
     }
     if (existing) {
       throw new ApiException(
@@ -278,32 +387,17 @@ export class AuthService {
         'This customer is already registered',
       );
     }
-
-    const user = await this.prisma.user.create({
-      data: {
-        type: dto.userType,
-        phone: dto.phone,
-        laborCardNo,
-        crmId: crmCustomer.crmId,
-        fullName: crmCustomer.fullName,
-        permissions: { create: { permission: 'BOOKING_CREATE_SELF' } },
-      },
-    });
-    await this.audit.record({
-      userId: user.id,
-      action: 'REGISTER',
-      entity: 'user',
-      entityId: user.id,
-    });
+    await this.syncCustomerFromCrm(dto.userType, dto.phone, laborCardNo, null);
   }
 
   async findUserByToken(token: string | undefined): Promise<AuthUser | null> {
-    const userId = verifySessionToken(token, env.authSecret, new Date());
-    if (userId === null) return null;
-    const user = await this.prisma.user.findUnique({
-      where: { id: userId },
-      include: WITH_PERMISSIONS,
+    const text = verifySessionToken(token, env.authSecret, new Date());
+    const subject = text === null ? null : parseSubject(text);
+    if (!subject) return null;
+    if (subject.kind === 'EMPLOYEE') return this.loadEmployee(subject.code);
+    const customer = await this.prisma.cRMCustomer.findUnique({
+      where: { cusId: subject.code },
     });
-    return user?.isActive ? toAuthUser(user) : null;
+    return customer?.isActive ? toCustomerUser(customer) : null;
   }
 }

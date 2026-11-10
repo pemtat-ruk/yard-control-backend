@@ -1,30 +1,40 @@
 import type { PrismaService } from '../../prisma/prisma.service.js';
 import type { AuditService } from '../audit/audit.service.js';
+import type { LayoutService } from '../layout/layout.service.js';
 import type { PaymentService } from '../payment/payment.service.js';
-import type { PricingService } from '../pricing/pricing.service.js';
 import type { SettingsService } from '../settings/settings.service.js';
 import type { RoundsService } from '../rounds/rounds.service.js';
 import { DEFAULT_SCHEDULE } from './domain/rounds.js';
 import type { AuthUser } from '../auth/auth.types.js';
 import { BookingService } from './booking.service.js';
 
-// ตารางรอบตั้งต้น 07:00 รอบละ 4 ชม.
+// ตารางรอบตั้งต้น 07:00 รอบละ 4 ชม. ราคา 100 บาท / ช่อง / รอบ
 const rounds = { resolver: () => Promise.resolve(() => DEFAULT_SCHEDULE) };
+const layout = {
+  catalog: () =>
+    Promise.resolve({
+      scheduleFor: () => DEFAULT_SCHEDULE,
+      priceFor: () => 100,
+    }),
+};
+
+function serviceWith(prisma: object): BookingService {
+  return new BookingService(
+    prisma as PrismaService,
+    {} as PaymentService,
+    {} as AuditService,
+    {} as SettingsService,
+    rounds as unknown as RoundsService,
+    layout as unknown as LayoutService,
+  );
+}
 
 // Workflow ข้อ 3.1: มีค่าปรับค้างชำระ ไม่อนุญาตให้ใช้สิทธิ์จอด
 describe('BookingService.create', () => {
   it('refuses a customer who has an unpaid fine', async () => {
-    const prisma = { fine: { count: () => Promise.resolve(1) } };
-    const service = new BookingService(
-      prisma as unknown as PrismaService,
-      {} as PricingService,
-      {} as PaymentService,
-      {} as AuditService,
-      {} as SettingsService,
-      rounds as unknown as RoundsService,
-    );
+    const service = serviceWith({ fine: { count: () => Promise.resolve(1) } });
     const customer: AuthUser = {
-      id: 7,
+      id: 'C00007',
       name: 'ลูกค้า',
       type: 'BUYER',
       department: null,
@@ -47,15 +57,7 @@ describe('BookingService.create', () => {
 });
 
 describe('BookingService.quote', () => {
-  const pricing = { priceFor: () => Promise.resolve(100) };
-  const service = new BookingService(
-    {} as PrismaService,
-    pricing as unknown as PricingService,
-    {} as PaymentService,
-    {} as AuditService,
-    {} as SettingsService,
-    rounds as unknown as RoundsService,
-  );
+  const service = serviceWith({});
   // 23:00 ของวันที่ 31 ส.ค. ตามเวลาไทย — ก่อนถึงกำหนดชำระของทุกวัน
   const now = new Date('2026-08-31T16:00:00Z');
   // ตัวอย่างในเอกสาร: 1-30 ก.ย. 5 ช่อง 4 ชม. 100 บาท/ช่อง

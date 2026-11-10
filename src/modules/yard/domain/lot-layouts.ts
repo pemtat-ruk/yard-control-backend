@@ -1,8 +1,7 @@
-import type {
-  LayoutCell,
-  LotLayout,
-} from './modules/yard/domain/lot-layout.js';
+import type { LayoutCell, LotLayout } from './lot-layout.js';
 
+// [เรา] ผังวาดของลานจริง — SA ไม่มีที่เก็บผัง จึงเก็บเป็น config ในโค้ด จับคู่ลานด้วยรหัสลาน (ParkingExtra.Code)
+// seed ใช้รายการนี้สร้าง Parking / ParkingSlot ด้วย
 // ลานจอดจริงของตลาด (พ.ย. 2569) จากผังของ รปภ. และตารางช่องจอดของฝ่ายนิวProcess
 // เลขช่องตามที่ใช้หน้างาน (ซ้ำกันข้ามลานได้) — หน้าเว็บแสดงเป็นรหัสเต็ม "ลาน-ช่อง" เช่น P5-12
 // ⚠️ รอยืนยัน: หน้าศูนย์อาหาร (ผัง 25 ช่อง แต่ตาราง 64), ผักทั่วไป 2 (ใช้ตามตาราง), อาคารจอด 4 (ยังไม่มีผัง)
@@ -13,8 +12,6 @@ export type LotSeed = {
   layout: LotLayout | null;
   // ช่องที่ไม่อยู่ในผัง (ลานที่ยังไม่มีผัง)
   extraSlots?: string[];
-  // ช่องที่กันไว้บางรอบของทุกวัน: รอบ 0 = 07:01–11:00 ... รอบ 5 = 03:01–07:00
-  held?: { slots: string[]; rounds: number[] };
 };
 
 const range = (from: number, to: number): string[] => {
@@ -100,8 +97,6 @@ export const REAL_LOTS: LotSeed[] = [
         { kind: 'aisle', label: 'โลจิสติกส์' },
       ],
     },
-    // ช่อง 50–60 เป็นของโลจิสติกส์ช่วง 23:01–11:00 (รอบ 4, 5 และ 0)
-    held: { slots: range(50, 60), rounds: [0, 4, 5] },
   },
   {
     code: 'FC',
@@ -200,4 +195,9 @@ export function slotCodesOf(lot: LotSeed): string[] {
       : [],
   );
   return [...inLayout, ...(lot.extraSlots ?? [])];
+}
+
+// ผังของลานตามรหัส — ลานที่ไม่มีในรายการ (เพิ่มจากหน้าจัดการผัง) ใช้ผังตั้งต้น
+export function layoutOf(code: string): LotLayout | null {
+  return REAL_LOTS.find((lot) => lot.code === code)?.layout ?? null;
 }

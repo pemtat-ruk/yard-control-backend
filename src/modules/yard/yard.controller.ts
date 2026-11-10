@@ -9,6 +9,7 @@ import {
   ParseIntPipe,
   Patch,
   Post,
+  Put,
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
@@ -21,7 +22,7 @@ import {
   CreateSlotDto,
   RecordInspectionDto,
   UpdateLotDto,
-  UpdateSlotHeldDto,
+  UpdateLotLayoutDto,
   UpdateSlotStatusDto,
 } from './dto/yard.dto.js';
 import {
@@ -137,6 +138,20 @@ export class YardController {
     return this.yardService.updateLot(user, id, dto);
   }
 
+  @Put('lots/:id/layout')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @RequirePermission('LAYOUT_EDIT')
+  @ApiOperation({
+    summary: 'บันทึกผังของลาน: แถวช่อง ทางรถ ป้าย (null = กลับไปใช้ผังตั้งต้น)',
+  })
+  updateLotLayout(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseIntPipe) id: number,
+    @Body() dto: UpdateLotLayoutDto,
+  ): Promise<void> {
+    return this.yardService.updateLotLayout(user, id, dto);
+  }
+
   @PublishesSlots()
   @Delete('lots/:id')
   @HttpCode(HttpStatus.NO_CONTENT)
@@ -172,19 +187,6 @@ export class YardController {
     @Body() dto: UpdateSlotStatusDto,
   ): Promise<void> {
     return this.yardService.updateSlotStatus(user, id, dto);
-  }
-
-  @PublishesSlots()
-  @Patch('slots/:id/held')
-  @HttpCode(HttpStatus.NO_CONTENT)
-  @RequirePermission('LAYOUT_TOGGLE')
-  @ApiOperation({ summary: 'กันช่องบางรอบของทุกวัน (เช่น โลจิสติกส์)' })
-  updateSlotHeld(
-    @CurrentUser() user: AuthUser,
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdateSlotHeldDto,
-  ): Promise<void> {
-    return this.yardService.updateSlotHeld(user, id, dto);
   }
 
   @PublishesSlots()

@@ -7,7 +7,7 @@ export type ServerEventType = 'slots' | 'payment' | 'notification';
 type ServerEvent = {
   type: ServerEventType;
   // null = ทุกคนที่เชื่อมต่ออยู่
-  userIds: number[] | null;
+  userIds: string[] | null;
   data: Record<string, unknown>;
 };
 
@@ -26,12 +26,12 @@ export class EventsService {
   }
 
   // ชำระสำเร็จ: ส่งให้เจ้าของรายการและผู้ทำรายการ (หน้า QR เปลี่ยนเป็นตั๋ว/ใบเสร็จทันที)
-  paymentSettled(paymentId: number, userIds: number[]): void {
+  paymentSettled(paymentId: number, userIds: string[]): void {
     this.events.next({ type: 'payment', userIds, data: { paymentId } });
   }
 
   // มีการแจ้งเตือนใหม่: กระดิ่งของผู้รับโหลดใหม่ทันที
-  notificationsCreated(userIds: number[]): void {
+  notificationsCreated(userIds: string[]): void {
     if (userIds.length === 0) return;
     this.events.next({
       type: 'notification',
@@ -40,7 +40,7 @@ export class EventsService {
     });
   }
 
-  streamFor(userId: number): Observable<MessageEvent> {
+  streamFor(userId: string): Observable<MessageEvent> {
     return merge(
       this.events.pipe(
         filter(

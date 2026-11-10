@@ -12,6 +12,7 @@ import { EventsModule } from './modules/events/events.module.js';
 import { FineModule } from './modules/fine/fine.module.js';
 import { HealthModule } from './modules/health/health.module.js';
 import { JobsModule } from './modules/jobs/jobs.module.js';
+import { LayoutModule } from './modules/layout/layout.module.js';
 import { NotificationModule } from './modules/notification/notification.module.js';
 import { PaymentModule } from './modules/payment/payment.module.js';
 import { PricingModule } from './modules/pricing/pricing.module.js';
@@ -33,6 +34,7 @@ import { PrismaModule } from './prisma/prisma.module.js';
     PrismaModule,
     AuditModule,
     SettingsModule,
+    LayoutModule,
     RoundsModule,
     EventsModule,
     AuthModule,

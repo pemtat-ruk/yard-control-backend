@@ -1,30 +1,27 @@
 import { hasPermission, type SessionUser } from './permissions.js';
+import { departmentOfRoles } from './roles.js';
 
 describe('permissions', () => {
-  const itStaff: SessionUser = {
-    type: 'EMPLOYEE',
-    department: 'IT',
-    permissions: ['LAYOUT_EDIT', 'SLOT_INSPECT'],
-  };
+  const itStaff: SessionUser = { permissions: ['LAYOUT_EDIT'] };
 
-  it('allows a granted permission that the department may hold', () => {
+  it('allows a permission that the role grants', () => {
     expect(hasPermission(itStaff, 'LAYOUT_EDIT')).toBe(true);
   });
 
-  it('rejects a grant the department may not hold', () => {
-    expect(hasPermission(itStaff, 'SLOT_INSPECT')).toBe(false);
-  });
-
-  it('rejects a permission that was never granted', () => {
+  it('rejects a permission that no role grants', () => {
     expect(hasPermission(itStaff, 'PRICING_MANAGE')).toBe(false);
   });
+});
 
-  it('lets registered customers book for themselves', () => {
-    const buyer: SessionUser = {
-      type: 'BUYER',
-      department: null,
-      permissions: ['BOOKING_CREATE_SELF'],
-    };
-    expect(hasPermission(buyer, 'BOOKING_CREATE_SELF')).toBe(true);
+describe('departmentOfRoles', () => {
+  it('maps a role to the department the web app uses', () => {
+    expect(departmentOfRoles(['IT Master'])).toBe('IT');
+    expect(departmentOfRoles(['Operation Inspector'])).toBe('YARD_MANAGEMENT');
+    expect(departmentOfRoles(['Admin Staff'])).toBe('CUSTOMER_SERVICE');
+  });
+
+  it('uses OTHER when no role belongs to a department', () => {
+    expect(departmentOfRoles(['General User'])).toBe('OTHER');
+    expect(departmentOfRoles([])).toBe('OTHER');
   });
 });

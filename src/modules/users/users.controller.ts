@@ -1,64 +1,43 @@
-import {
-  Body,
-  Controller,
-  Get,
-  Param,
-  ParseIntPipe,
-  Patch,
-  Post,
-  Put,
-} from '@nestjs/common';
-import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import { Body, Controller, Get, Param, Put, Query } from '@nestjs/common';
+import { ApiOperation, ApiQuery, ApiTags } from '@nestjs/swagger';
 import { CurrentUser, RequirePermission } from '../auth/auth.decorators.js';
 import type { AuthUser } from '../auth/auth.types.js';
+import { UpdateRolesDto } from './dto/update-roles.dto.js';
 import {
-  CreateEmployeeDto,
-  SetEmployeeActiveDto,
-} from './dto/manage-employee.dto.js';
-import { UpdatePermissionsDto } from './dto/update-permissions.dto.js';
-import { UsersService, type EmployeeView } from './users.service.js';
+  UsersService,
+  type EmployeeView,
+  type RoleView,
+} from './users.service.js';
 
-// การให้สิทธิ์เป็นงานตั้งค่าระบบของฝ่าย IT
+// การกำหนดกลุ่มสิทธิ์เป็นงานตั้งค่าระบบของฝ่าย IT
 @ApiTags('users')
 @RequirePermission('SETTINGS_MANAGE')
 @Controller('users')
 export class UsersController {
   constructor(private readonly usersService: UsersService) {}
 
+  @Get('roles')
+  @ApiOperation({ summary: 'กลุ่มสิทธิ์ทั้งหมดพร้อมสิทธิ์ของแต่ละกลุ่ม' })
+  listRoles(): Promise<RoleView[]> {
+    return this.usersService.listRoles();
+  }
+
   @Get('employees')
-  @ApiOperation({ summary: 'พนักงานทั้งหมดพร้อมสิทธิ์ที่มีและสิทธิ์ที่ให้ได้' })
-  listEmployees(): Promise<EmployeeView[]> {
-    return this.usersService.listEmployees();
-  }
-
-  @Post('employees')
+  @ApiQuery({ name: 'q', required: false })
   @ApiOperation({
-    summary: 'เพิ่มพนักงาน (รหัสพนักงาน ชื่อ ฝ่าย รหัสผ่านเริ่มต้น)',
+    summary: 'พนักงานที่มีกลุ่มสิทธิ์ หรือค้นพนักงานของบริษัทด้วยชื่อ/รหัส (q)',
   })
-  createEmployee(
-    @CurrentUser() user: AuthUser,
-    @Body() dto: CreateEmployeeDto,
-  ): Promise<EmployeeView> {
-    return this.usersService.createEmployee(user, dto);
+  listEmployees(@Query('q') q?: string): Promise<EmployeeView[]> {
+    return this.usersService.listEmployees(q);
   }
 
-  @Patch(':id/active')
-  @ApiOperation({ summary: 'เปิด/ปิดใช้งานพนักงาน' })
-  setActive(
+  @Put(':code/roles')
+  @ApiOperation({ summary: 'กำหนดกลุ่มสิทธิ์ของพนักงาน' })
+  updateRoles(
     @CurrentUser() user: AuthUser,
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: SetEmployeeActiveDto,
+    @Param('code') code: string,
+    @Body() dto: UpdateRolesDto,
   ): Promise<EmployeeView> {
-    return this.usersService.setActive(user, id, dto);
-  }
-
-  @Put(':id/permissions')
-  @ApiOperation({ summary: 'กำหนดสิทธิ์รายบุคคลของพนักงาน' })
-  updatePermissions(
-    @CurrentUser() user: AuthUser,
-    @Param('id', ParseIntPipe) id: number,
-    @Body() dto: UpdatePermissionsDto,
-  ): Promise<EmployeeView> {
-    return this.usersService.updatePermissions(user, id, dto);
+    return this.usersService.updateRoles(user, code, dto);
   }
 }
