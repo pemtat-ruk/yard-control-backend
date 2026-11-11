@@ -1,14 +1,7 @@
-# Render Blueprint: ฐานข้อมูล + backend + frontend ในครั้งเดียว (Dashboard → New → Blueprint → เลือก repo นี้)
+# Render Blueprint: backend + frontend ในครั้งเดียว (Dashboard → New → Blueprint → เลือก repo นี้)
 # ค่าที่มี sync: false ต้องกรอกเองตอนสร้าง — URL ของแต่ละ service คือ https://<name>.onrender.com
 # (ถ้าชื่อซ้ำกับคนอื่น Render จะต่อท้ายชื่อให้ ให้แก้ค่าตาม URL จริงแล้ว deploy ใหม่)
-
-databases:
-  - name: ycs-db
-    plan: free # แบบฟรีถูกลบหลัง 30 วัน — ใช้งานจริงเปลี่ยนเป็นแบบเสียเงิน
-    region: singapore
-    postgresMajorVersion: "17"
-    databaseName: yard_control
-    user: ycs
+# ฐานข้อมูลเป็น SQL Server ซึ่ง Render ไม่มีให้ — สร้างไว้ภายนอก (เช่น Azure SQL, collation Thai_CI_AS) แล้วใส่ DATABASE_URL เอง
 
 services:
   - type: web
@@ -27,10 +20,9 @@ services:
         value: production
       - key: NODE_VERSION
         value: "24"
+      # sqlserver://<host>:1433;database=<db>;user=<user>;password=<pass>;encrypt=true
       - key: DATABASE_URL
-        fromDatabase:
-          name: ycs-db
-          property: connectionString
+        sync: false
       - key: AUTH_SECRET
         generateValue: true
       # URL ของ frontend เช่น https://ycs-frontend.onrender.com (ไม่มี / ท้าย)

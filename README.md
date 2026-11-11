@@ -156,14 +156,16 @@ Base URL: `http://localhost:4000/api/v1` — เอกสารแบบลอ�
 
 ## Deploy ขึ้น Render
 
-`render.yaml` สร้างฐานข้อมูล (`ycs-db`), backend (`ycs-backend`) และ frontend (`ycs-frontend` จาก repo `yard-control-system`) ในครั้งเดียว
+`render.yaml` สร้าง backend (`ycs-backend`) และ frontend (`ycs-frontend` จาก repo `yard-control-system`) ในครั้งเดียว ฐานข้อมูลเป็น SQL Server ซึ่ง Render ไม่มีให้ ต้องสร้างไว้ภายนอกก่อน
 
+0. สร้างฐาน SQL Server (เช่น Azure SQL Database) ตั้ง collation `Thai_CI_AS` และเปิด firewall ให้ backend บน Render ต่อเข้าได้
 1. Render Dashboard → **New → Blueprint** → เลือก repo นี้
 2. กรอกค่าที่ Render ถาม (URL ของ service คือ `https://<ชื่อ>.onrender.com`):
+   - `DATABASE_URL` = `sqlserver://<host>:1433;database=<db>;user=<user>;password=<pass>;encrypt=true`
    - `WEB_ORIGIN` = URL ของ frontend เช่น `https://ycs-frontend.onrender.com`
    - `BACKEND_URL` (ของ frontend) = URL ของ backend เช่น `https://ycs-backend.onrender.com` ไม่มี `/api/v1`
 3. ถ้า Render ต่อท้ายชื่อ service เพราะชื่อซ้ำ ให้แก้สองค่านี้ตาม URL จริง แล้วกด Manual Deploy ทั้งสอง service (frontend ใช้ `BACKEND_URL` ตอน build)
-4. ข้อมูลตั้งต้นใส่ให้เองทุกครั้งที่ backend เริ่มทำงาน (`node dist/seed.js` ใน startCommand): ลานจอด A/B, พนักงาน CS001 / YD001 / IT001 (รหัสผ่าน `ycs-demo-1234`), ลูกค้าทดสอบ `0800000001` และเสื้อเขียว `LB9001` · `0800000002`, ราคาตั้งต้น — สร้างเฉพาะที่ยังไม่มี (รหัสผ่านพนักงานตั้งกลับเป็นค่าทดสอบทุกครั้ง) ⚠️ ก่อนใช้งานจริงต้องเปลี่ยนรหัสผ่านและเอาบัญชีทดสอบออก
+4. ข้อมูลตั้งต้นใส่ให้เองทุกครั้งที่ backend เริ่มทำงาน (`node dist/seed.js` ใน startCommand): ลานจอดจริง 5 ลาน, พนักงาน CS001 / YD001 / IT001 (รหัสผ่าน `ycs-demo-1234`), ลูกค้าทดสอบ `0800000001` และเสื้อเขียว `LB9001` · `0800000002`, ราคาตั้งต้น — สร้างเฉพาะที่ยังไม่มี (รหัสผ่านพนักงานตั้งกลับเป็นค่าทดสอบทุกครั้ง) ⚠️ ก่อนใช้งานจริงต้องเปลี่ยนรหัสผ่านและเอาบัญชีทดสอบออก
 
 ทำไมตั้งแบบนี้
 
@@ -172,7 +174,7 @@ Base URL: `http://localhost:4000/api/v1` — เอกสารแบบลอ�
 - **`npm ci --include=dev`**: `NODE_ENV=production` ทำให้ npm ข้ามเครื่องมือ build
 - **`TRUST_PROXY_HOPS`**: หลัง deploy ให้ดูค่า `ip` ใน log ของ backend (Render → Logs) ถ้าคำขอจากคนละเครื่องได้ ip เดียวกัน (ip ของ frontend) ให้เพิ่มค่าทีละ 1 จนได้ ip ของผู้ใช้ — ไม่อย่างนั้น rate limit จะนับทุกคนรวมกัน
 
-ข้อจำกัดของแบบฟรี: service หลับเมื่อไม่มีคนใช้ ~15 นาที (คำขอแรกช้า ~1 นาที และงานตามเวลา เช่น ยกเลิกการจองที่ไม่ชำระ ไม่ทำงานระหว่างหลับ), ฐานข้อมูลแบบฟรีถูกลบหลัง 30 วัน — ใช้งานจริงเปลี่ยน `plan` ใน `render.yaml`
+ข้อจำกัดของแบบฟรี: service หลับเมื่อไม่มีคนใช้ ~15 นาที (คำขอแรกช้า ~1 นาที และงานตามเวลา เช่น ยกเลิกการจองที่ไม่ชำระ ไม่ทำงานระหว่างหลับ) — ใช้งานจริงเปลี่ยน `plan` ใน `render.yaml`
 
 ## กติกาฐานข้อมูล
 
